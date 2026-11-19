@@ -11,7 +11,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 process.env.CW_CA_DIR = path.join(directory, 'certificates');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { loadStore, saveStore, upsertAccount } = await import('../src/accounts.mjs');
 const { GameClient } = await import('../src/client.mjs');
 const originalMethods = Object.fromEntries(['connect', 'request', 'send', 'sendWatch', 'stop', 'connected', 'interleaveRead']

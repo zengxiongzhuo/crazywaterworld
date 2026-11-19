@@ -15,7 +15,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([
   [2, 'CrossRankSubjectCfg', { data: [{ subjectId: 4, name: '藏品培养' }] }],
 ]));
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { loadProtocol } = await import('../src/proto.mjs');
 const { defaultSettings, createUsageLedger } = await import('../src/automation-settings.mjs');
 const protocol = loadProtocol(), ids = ['rank-a', 'rank-b', 'rank-offline'];

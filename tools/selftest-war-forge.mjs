@@ -809,7 +809,7 @@ await check('城战窗口内无有效目标不阻断巨轮，跨入有效窗口�
 });
 
 fs.writeFileSync(path.join(directory,'accounts.json'),JSON.stringify({version:1,activeId:'a',accounts:['a','b'].map(id=>({id,label:'城战锻造模拟'+id,url:'ws://127.0.0.1:1',login:{},automation:{enabled:false,paused:true}}))}));
-const { createConsole } = await import('../src/server.mjs');const app=createConsole({port:0});await app.listen();
+const { createConsole } = await import('./fixtures/console-server.mjs');const app=createConsole({port:0});await app.listen();
 const base='http://127.0.0.1:'+app.server.address().port;
 const api=async(route,account='a',body)=>{const response=await fetch(base+'/api/'+route+'?account='+account,{method:body?'POST':'GET',body:body?JSON.stringify(body):undefined});return{status:response.status,data:await response.json()};};
 try {

@@ -193,7 +193,7 @@ try {
     const tables = { ...pirateAdvanceFixture().config.tables, ...fixture().config.tables, BuildingUnlockCfg: { data: [{ buildingType: '远征船', buildingId: '1远征船' }] } };
     fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify(Object.entries(tables).map(([name, table], index) => [index, name, table])));
     fs.writeFileSync(path.join(process.env.CW_DATA_DIR, 'accounts.json'), JSON.stringify({ version: 1, activeId: 'a', accounts: ['a','b'].map(id => ({ id, label: '模拟账号' + id, url: 'ws://127.0.0.1:1', login: {}, automation: { paused: true } })) }));
-    const { createConsole } = await import('../src/server.mjs'); const app = createConsole({ port: 0 });
+    const { createConsole } = await import('./fixtures/console-server.mjs'); const app = createConsole({ port: 0 });
     try {
       const url = await app.listen();
       const a = await (await fetch(url + '/api/settings?account=a')).json();
@@ -225,7 +225,7 @@ try {
   });
   await test('手动主线和试炼使用本次参数，不继承或修改挂机失败上限', async () => {
     const f = fixture(); f.client.stop = () => { f.client.connected = false; };
-    const { createConsole } = await import('../src/server.mjs'), app = createConsole({ port: 0 });
+    const { createConsole } = await import('./fixtures/console-server.mjs'), app = createConsole({ port: 0 });
     try {
       const url = await app.listen(); await fetch(url + '/api/settings?account=a');
       const session = app.sessions.get('a');
@@ -267,7 +267,7 @@ try {
   await test('海盗预览忽略累计汽油用量，沿用自动挂机停止状态且不发送派遣', async () => {
     const f = pirateAdvanceFixture();
     f.client.stop = () => { f.client.connected = false; };
-    const { createConsole } = await import('../src/server.mjs'), app = createConsole({ port: 0 });
+    const { createConsole } = await import('./fixtures/console-server.mjs'), app = createConsole({ port: 0 });
     try {
       const url = await app.listen();
       await fetch(url + '/api/settings?account=b');

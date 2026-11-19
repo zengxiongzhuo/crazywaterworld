@@ -9,7 +9,7 @@ const { previewSiliconShortcut, runSiliconShortcut } = await import('../src/sili
 const { defaultSettings, createUsageLedger, saveAutomationSettings } = await import('../src/automation-settings.mjs');
 const { reserveDispatch } = await import('../src/fleet-availability.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 let sequence = 0, passed = 0, app;
 function fixture() {
   const f = siliconFixture(); f.settings = defaultSettings();

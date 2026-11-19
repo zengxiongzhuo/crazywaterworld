@@ -9,7 +9,7 @@ process.env.CW_DATA_DIR = directory;
 process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 process.env.CW_CA_DIR = path.join(directory, 'certificates');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { findHeadlessBrowser } = await import('../src/platform/browser.mjs');
 const { GameClient } = await import('../src/client.mjs');
 let connections = 0, starts = 0, cancels = 0, state = { phase: 'cancelled', id: null }, qrImage = '';

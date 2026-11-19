@@ -17,7 +17,7 @@ const { GameClient } = await import('../src/client.mjs');
 const { loadProtocol } = await import('../src/proto.mjs');
 const { decodePng, encodePng, cropIcon, shrink, iconThumb } = await import('../src/art-thumbs.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole, findAppBrowser } = await import('../src/server.mjs');
+const { createConsole, findAppBrowser } = await import('./fixtures/console-server.mjs');
 const { PAGE } = await import('../src/page.mjs');
 const { renderVersionedPage } = await import('../src/console-version.mjs');
 
@@ -162,7 +162,7 @@ const raw = (pathname, headers = {}) => new Promise((resolve, reject) => {
 await test('首页带 gzip 和 ETag，重新验证返回 304；不支持压缩的客户端拿到原文', async () => {
   const zipped = await raw('/', { 'accept-encoding': 'gzip' });
   assert.equal(zipped.headers['content-encoding'], 'gzip');
-  assert.equal(zipped.headers['cache-control'], 'no-cache');
+  assert.equal(zipped.headers['cache-control'], 'private, no-store');
   assert.equal(zlib.gunzipSync(zipped.body).toString(), renderVersionedPage(PAGE, zipped.headers['x-cw-console-version']));
   assert.ok(zipped.body.length < Buffer.byteLength(PAGE) / 3, '压缩后应明显变小');
   const again = await raw('/', { 'if-none-match': zipped.headers.etag });

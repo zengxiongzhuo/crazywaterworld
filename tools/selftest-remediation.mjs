@@ -17,7 +17,7 @@ await check('实际HTTP草稿预览不改变运行城战预留、设置或用量
  const original=f.client.request;f.client.request=async(n,b,r)=>n==='RadarInfoRequest'?{radarInfo:{events:[]}}:original(n,b,r);
  fs.writeFileSync(path.join(dir,'accounts.json'),JSON.stringify({version:1,activeId:'audit',accounts:[{id:'audit',url:'ws://127.0.0.1:1',login:{},automation:{paused:true,enabled:false}}]}));
  saveAutomationSettings('audit',f.settings,{revision:0});
- const {createConsole}=await import('../src/server.mjs');const app=createConsole({port:0});await app.listen();
+ const {createConsole}=await import('./fixtures/console-server.mjs');const app=createConsole({port:0});await app.listen();
  try{
   const base='http://127.0.0.1:'+app.server.address().port;
   const saved=await fetch(base+'/api/settings?account=audit').then(r=>r.json());const session=app.sessions.get('audit');session.client=f.client;session.player=f.player;session.paused=false;

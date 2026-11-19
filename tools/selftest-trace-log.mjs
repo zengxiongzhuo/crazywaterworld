@@ -198,7 +198,7 @@ assert.equal(handedOff.length, 1);
 transport.on('sent', () => { throw new Error('诊断观察者失败'); });
 assert.doesNotThrow(() => transport.send('WriteRequest', {}));
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 Object.defineProperty(GameClient.prototype, 'connected', { get() { return this.state === 'READY'; } });
 GameClient.prototype.connect = async function () {
   this.state = 'READY';

@@ -42,7 +42,7 @@ function publish(contents) {
 }
 publish(source(1));
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
 const { getProtocolSource } = await import('../src/proto.mjs');
 const connected = new Set();

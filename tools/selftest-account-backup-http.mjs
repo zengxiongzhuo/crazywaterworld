@@ -10,7 +10,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { accountFromCredential, loadStore, saveStore, ACCOUNTS_PATH } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings, settingsFile } = await import('../src/automation-settings.mjs');
 const { importAccountBackup, previewAccountImport } = await import('../src/account-backup.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { GameClient } = await import('../src/client.mjs');
 let connections = 0;
 GameClient.prototype.connect = async () => { connections++; throw new Error('测试禁止连接游戏'); };

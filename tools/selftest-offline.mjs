@@ -30,6 +30,7 @@ const cases = [
   ['selftest-settings-recovery.mjs'],
   ['selftest-settings-recovery-http.mjs'],
   ['selftest-console-version.mjs'],
+  ['selftest-console-auth.mjs'],
   ['selftest-console-version-http.mjs'],
   ['selftest-console-version-ui.mjs'],
   ['selftest-protocol-updates.mjs'],

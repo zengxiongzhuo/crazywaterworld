@@ -12,7 +12,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { automationTasks } = await import('../src/automation.mjs');
 const { settingsFromNative, saveAutomationSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 const tasks = Object.fromEntries(automationTasks.map(task => [task.key, task.key === 'mail']));

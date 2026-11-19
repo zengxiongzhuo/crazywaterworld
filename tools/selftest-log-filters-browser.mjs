@@ -12,7 +12,7 @@ process.env.CW_RESOURCE_AUTO_UPDATE = '0';
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 let connections = 0;
 GameClient.prototype.connect = async () => { connections++; throw new Error('日志验收禁止连接游戏'); };
 const longTitle = '远航舰队的超长账号备注 · 第一海域与基地生产测试';

@@ -248,7 +248,7 @@ try{
  });
  await check('HTTP暂停断线时也能保存预设，账号隔离且重启恢复但不自动开任务',async()=>{
   fs.writeFileSync(path.join(dir,'accounts.json'),JSON.stringify({version:1,activeId:'preset-http-a',accounts:['preset-http-a','preset-http-b'].map(id=>({id,label:'预设验证',url:'ws://127.0.0.1:1',login:{},automation:{enabled:false,paused:true}}))}));
-  const {createConsole}=await import('../src/server.mjs'),preset={target:11,mode:'selected',memberIds:['9007199254740995'],askEnabled:true,askTarget:13,askItemId:'橡胶圈',checkEverySeconds:1};
+  const {createConsole}=await import('./fixtures/console-server.mjs'),preset={target:11,mode:'selected',memberIds:['9007199254740995'],askEnabled:true,askTarget:13,askItemId:'橡胶圈',checkEverySeconds:1};
   let app=createConsole({port:0});
   try{
    await app.listen();let root='http://127.0.0.1:'+app.server.address().port;
@@ -260,7 +260,7 @@ try{
   }finally{app.server.closeAllConnections();await app.close();}
  });
  await check('HTTP任务与盟友材料读取可用，不修改挂机/配置，暂停停止任务',async()=>{
-  const f=guildMutualFixture();fs.writeFileSync(path.join(dir,'accounts.json'),JSON.stringify({version:1,activeId:'http',accounts:[{id:'http',label:'互助验证',url:'ws://127.0.0.1:1',login:{},automation:{enabled:false,paused:true}}]}));saveAutomationSettings('http',defaultSettings(),{revision:0});const {createConsole}=await import('../src/server.mjs');const app=createConsole({port:0});await app.listen();const root='http://127.0.0.1:'+app.server.address().port;
+  const f=guildMutualFixture();fs.writeFileSync(path.join(dir,'accounts.json'),JSON.stringify({version:1,activeId:'http',accounts:[{id:'http',label:'互助验证',url:'ws://127.0.0.1:1',login:{},automation:{enabled:false,paused:true}}]}));saveAutomationSettings('http',defaultSettings(),{revision:0});const {createConsole}=await import('./fixtures/console-server.mjs');const app=createConsole({port:0});await app.listen();const root='http://127.0.0.1:'+app.server.address().port;
   try{await fetch(root+'/api/settings');const session=app.sessions.get('http');session.client=f.client;session.player=f.player;session.paused=false;const bytes=fs.readFileSync(path.join(dir,'automation-settings.json'));const opts=await fetch(root+'/api/guild/mutual/options').then(r=>r.json());assert(opts.members.some(m=>m.id===f.friend));assert(opts.materials.some(m=>m.id==='橡胶圈'));
    const post=(route,body)=>fetch(root+route,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});assert.equal((await post('/api/guild/mutual/start',{confirm:true,target:1})).status,200);await new Promise(r=>setTimeout(r,1200));const state=await fetch(root+'/api/guild/mutual').then(r=>r.json());assert.equal(state.running,false);assert.equal(state.dailyUsed,1);assert.equal(session.loop.running,false);assert.deepEqual(fs.readFileSync(path.join(dir,'automation-settings.json')),bytes);
    await post('/api/guild/mutual/start',{confirm:true,target:20});await post('/api/accounts/pause',{paused:true});await new Promise(r=>setTimeout(r,20));assert.equal(session.mutualAid.view().running,false);

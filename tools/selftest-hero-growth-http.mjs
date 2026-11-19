@@ -19,7 +19,7 @@ const tables = {
 fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify(Object.entries(tables).map(([name, data], i) => [i, name, { data }])));
 const { defaultSettings } = await import('../src/automation-settings.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const accountId = 'hero-growth-http';
 saveStore({ version: 1, activeId: accountId, accounts: [{
   id: accountId, label: '养成回归', url: 'ws://fixture.invalid', login: {}, automation: { enabled: false, autoStart: false },

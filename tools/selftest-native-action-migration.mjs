@@ -12,7 +12,7 @@ const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings, settingsFromNative, settingsFromLegacyNative } = await import('../src/automation-settings.mjs');
 const { nativePreferenceEnabled } = await import('../src/automation-policy.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const oldKeys = ['museumCollect', 'museumExplore', 'petCollect', 'petBreed', 'radarAuto', 'radarRepair', 'museumRevenue', 'museumAchievements'];
 let connections = 0, app, root;
 GameClient.prototype.connect = async () => { connections++; throw new Error('迁移测试禁止连接游戏'); };

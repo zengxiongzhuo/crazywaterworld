@@ -11,7 +11,7 @@ process.env.CW_DATA_DIR = directory;
 process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 process.env.CW_RESOURCE_AUTO_UPDATE = '0';
 const { installResourceFieldMap } = await import('./fixtures/resource-field-map.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
 const reads = [], writes = [];
 const requests = ['GuildInfo', 'WorldInfo', 'UniteWorldsPlan', 'OnWater', 'MyFleets', 'WarDeclaration', 'SeasonTaskStage', 'FortList',

@@ -15,7 +15,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { activityAvailability } = await import('../src/activity-availability.mjs');
 const { catalogEntry, rememberActivityCatalog } = await import('../src/activity-catalog.mjs');
 const { defaultSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');

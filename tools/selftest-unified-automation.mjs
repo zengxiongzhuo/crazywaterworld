@@ -71,7 +71,7 @@ await test('未确认首杀占用阻止巨轮与城战抢用同一舰队',async(
 await test('隔离HTTP控制保存、旧版本拒绝、账号隔离与暂停首杀拦截',async()=>{
  process.env.CW_DATA_DIR=path.join(dir,'http');fs.mkdirSync(process.env.CW_DATA_DIR);
  fs.writeFileSync(path.join(process.env.CW_DATA_DIR,'accounts.json'),JSON.stringify({version:1,activeId:'http-a',accounts:['a','b'].map(id=>({id:'http-'+id,label:'虚构 '+id,url:'ws://127.0.0.1:1',login:{},automation:{paused:true}}))}));
- const {createConsole}=await import('../src/server.mjs');const app=createConsole({port:0});await app.listen();
+ const {createConsole}=await import('./fixtures/console-server.mjs');const app=createConsole({port:0});await app.listen();
  const api=async(route,body,account='http-a')=>{const r=await fetch('http://127.0.0.1:'+app.server.address().port+'/api/'+route+'?account='+account,{method:body?'POST':'GET',headers:{'content-type':'application/json'},...(body?{body:JSON.stringify(body)}:{})});return{status:r.status,data:await r.json()};};
  try{const a=await api('settings'),b=await api('settings',null,'http-b');const saved=await api('loop/control',{confirm:true,key:'building.collect',enabled:false,revision:a.data.revision});assert.equal(saved.status,200);assert.equal(saved.data.controls.find(x=>x.key==='building.collect').enabled,false);assert.equal((await api('settings')).data.settings.factory.gain,a.data.settings.factory.gain);
  assert.equal((await api('loop/control',{confirm:true,key:'factory.gain',enabled:false,revision:a.data.revision})).status,400);assert.deepEqual((await api('settings',null,'http-b')).data.settings,b.data.settings);assert.equal((await api('pirates/advance/start',{confirm:true})).status,400);assert(!app.sessions.get('http-a').client);

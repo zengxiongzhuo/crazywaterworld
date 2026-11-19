@@ -7,6 +7,10 @@ import {
 
 declare global {
   interface Window {
+    cwConsoleAuth?: {
+      check(response: Response): void;
+      redirect(): void;
+    };
     cwConsoleVersion?: {
       readonly version: string;
       isStale(): boolean;
@@ -65,6 +69,10 @@ export function createAccountApi(
       ...options,
       headers,
     });
+    if (response.status === 401) {
+      if (typeof window !== "undefined") window.cwConsoleAuth?.redirect();
+      throw new ApiError("登录已失效，请重新输入控制台密码", 401);
+    }
     const receivedVersion = response.headers.get("X-CW-Console-Version");
     if (pageVersion && receivedVersion && receivedVersion !== pageVersion) {
       pageStale = true;

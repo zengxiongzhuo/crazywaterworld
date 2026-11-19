@@ -113,6 +113,28 @@ const operationNames = ${JSON.stringify(operationLabels)};
 let current = null;
 let accounts = [];
 let stream = null;
+let consoleAuthRedirecting = false, consoleAuthChecking = false;
+window.cwConsoleAuth = Object.freeze({
+  redirect() {
+    if (consoleAuthRedirecting) return;
+    consoleAuthRedirecting = true;
+    stream?.close();
+    location.replace('/login');
+  },
+  check(response) {
+    if (response.status !== 401) return;
+    this.redirect();
+    throw Object.assign(new Error('登录已失效，请重新输入控制台密码'), { code: 'CONSOLE_AUTH_REQUIRED', logged: true });
+  }
+});
+$('console-logout').addEventListener('click', async () => {
+  const button = $('console-logout'); button.disabled = true;
+  try {
+    const response = await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+    if (response.ok || response.status === 401) window.cwConsoleAuth.redirect();
+    else throw new Error('退出登录失败，请重试');
+  } catch (error) { button.disabled = false; reportError(error); }
+});
 const consoleDraftFormat = ${JSON.stringify({ format: SETTINGS_FORMAT, version: SETTINGS_SCHEMA_VERSION })};
 
 function createConsoleVersionGuard() {
@@ -221,6 +243,7 @@ async function call(path, options) {
   trackCall(1);
   try {
     const res = await fetch(url, opts);
+    window.cwConsoleAuth.check(res);
     versionGuard.check(res);
     versionGuard.assertWritable(path, method);
     const data = await res.json();
@@ -648,6 +671,16 @@ function subscribe() {
   updateLogSummary();
   if (stream) return;
   stream = new EventSource('/api/events?scope=all');
+  stream.addEventListener('auth-required', () => window.cwConsoleAuth.redirect());
+  stream.onerror = async () => {
+    if (consoleAuthChecking || consoleAuthRedirecting) return;
+    consoleAuthChecking = true;
+    try {
+      const response = await fetch('/api/auth/session', { credentials: 'same-origin', cache: 'no-store' });
+      if (response.status === 401) window.cwConsoleAuth.redirect();
+    } catch { /* 暂时断网由 EventSource 自动重连。 */ }
+    finally { consoleAuthChecking = false; }
+  };
   stream.addEventListener('logs-cleared', event => clearLogBefore(JSON.parse(event.data)));
   stream.addEventListener('lineup-changed', event => {
     const { account } = JSON.parse(event.data);

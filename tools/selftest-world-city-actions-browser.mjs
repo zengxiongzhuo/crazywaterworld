@@ -10,7 +10,7 @@ process.env.CW_DATA_DIR = directory;
 process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 process.env.CW_RESOURCE_AUTO_UPDATE = '0';
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { GameClient } = await import('../src/client.mjs');
 GameClient.prototype.connect = async () => { throw Error('界面验收禁止连接游戏'); };
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');

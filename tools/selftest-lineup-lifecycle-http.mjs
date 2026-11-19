@@ -16,7 +16,7 @@ const tables = {
   TrialRaidStageCfg: [{ raidId: 2, stageId: 2001, stageLevel: 1, openLevel: 1 }],
 };
 fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify(Object.entries(tables).map(([name, data], index) => [index, name, { data }])));
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
 const { withTemporaryLineup, readLineupRuntime } = await import('../src/lineup-runtime.mjs');
 const { normalizeFormation } = await import('../src/saved-lineups.mjs');

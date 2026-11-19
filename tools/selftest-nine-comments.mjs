@@ -134,7 +134,7 @@ try {
   });
   await check('未连接也能预览运行安排，旧配置原值不变，不创建游戏连接', async () => {
     fs.writeFileSync(path.join(directory,'accounts.json'),JSON.stringify({version:1,activeId:'qa',accounts:[{id:'qa',label:'离线验证',url:'ws://127.0.0.1:1',login:{},automation:{paused:true,enabled:false}}]}));
-    const {createConsole}=await import('../src/server.mjs');const app=createConsole({port:0});await app.listen();
+    const {createConsole}=await import('./fixtures/console-server.mjs');const app=createConsole({port:0});await app.listen();
     try {const root='http://127.0.0.1:'+app.server.address().port;
       const result=await fetch(root+'/api/settings/preview',{method:'POST',body:JSON.stringify({category:'runtime'}),headers:{'content-type':'application/json'}});assert.equal(result.status,200);const body=await result.json();assert.match(body.scopeLabel,/运行安排/);assert.equal(body.actions.length,0);assert.equal(app.sessions.get('qa').client,null);
       const no=await fetch(root+'/api/trials/start',{method:'POST',body:JSON.stringify({confirm:true,raidId:1,maxFailures:3})});assert.equal(no.status,400);assert.equal(app.sessions.get('qa').client,null);

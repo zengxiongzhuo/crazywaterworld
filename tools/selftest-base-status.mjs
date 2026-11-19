@@ -315,7 +315,7 @@ try {
     fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
     const { saveStore } = await import('../src/accounts.mjs');
     const { saveAutomationSettings } = await import('../src/automation-settings.mjs');
-    const { createConsole } = await import('../src/server.mjs');
+    const { createConsole } = await import('./fixtures/console-server.mjs');
     saveStore({ version: 1, activeId: 'base-detailed', accounts: ['base-detailed', 'base-legacy'].map(id => ({
       id, label: '基地状态隔离测试', url: 'ws://127.0.0.1:1', login: {}, automation: { paused: true },
     })) });

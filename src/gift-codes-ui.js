@@ -178,6 +178,7 @@ $('gift-record-export').onclick=async()=>{
   try{
     assertCurrent();
     const response=await fetch(path+'?'+query,{headers:guard?.version?{'X-CW-Console-Version':guard.version}:{}});
+    globalThis.cwConsoleAuth?.check(response);
     assertCurrent(response);
     if(!response.ok){const data=await response.json();if(guard?.check(response,data)===false)throw Error('控制台已更新，请刷新后重新导出');throw Error(data.error||'导出失败');}
     const blob=await response.blob();assertCurrent(response);

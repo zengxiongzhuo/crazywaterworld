@@ -16,7 +16,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { defaultSettings, loadAutomationSettings, saveAutomationSettings, settingsFile, usageFile,
   createUsageLedger, SETTINGS_SCHEMA_VERSION } = await import('../src/automation-settings.mjs');
 const file = settingsFile(), connected = new Set(), states = new Map();

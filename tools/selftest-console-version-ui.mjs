@@ -10,6 +10,7 @@ const section = (start, end) => {
 };
 const guardSource = section('function createConsoleVersionGuard(', 'window.cwConsoleVersion = createConsoleVersionGuard();');
 const callSource = section('async function call(', 'function el(');
+const authSource = section('let consoleAuthRedirecting', "$('console-logout').addEventListener");
 const response = (version = 'old-page', data = { ok: true }, status = 200) => ({
   headers: new Headers(version ? { 'X-CW-Console-Version': version } : {}),
   ok: status < 400, status, statusText: String(status), async json() { return data; },
@@ -25,16 +26,18 @@ function fixture(version = 'old-page', { account = 'account-a', hasDraft = true 
     elements.set('console-version-' + name, { hidden: false, disabled: false });
   }
   env.document = { getElementById: id => elements.get(id), querySelector: selector => selector.startsWith('meta[') ? meta : null };
-  env.location = { href: 'http://console.test/', reload() { env.reloads++; } };
+  env.redirects = [];
+  env.location = { href: 'http://console.test/', reload() { env.reloads++; }, replace(path) { env.redirects.push(path); } };
   env.window = { confirm() { env.confirms++; return env.allowRefresh; }, dispatchEvent(event) { env.events.push(event.type); } };
   env.fetch = async (path, options) => { env.requests.push({ path, options }); return env.fetchHook ? env.fetchHook(path, options) : response(); };
   const api = new Function('env', `
     const document = env.document, window = env.window, location = env.location, fetch = env.fetch;
     const $ = id => document.getElementById(id);
-    let current = env.account;
+    let current = env.account, stream = null;
     const configHasDraft = () => env.hasDraft, configDownloadDraft = () => { env.downloads++; };
     const trackCall = delta => { env.progress += delta; }, appendLog = () => {}, refreshLoop = async () => {};
     const reportError = error => env.errors.push(error);
+    ${authSource}
     ${guardSource}
     window.cwConsoleVersion = createConsoleVersionGuard();
     ${callSource}
@@ -45,6 +48,15 @@ function fixture(version = 'old-page', { account = 'account-a', hasDraft = true 
 const mismatch = error => error.code === 'CLIENT_VERSION_MISMATCH' && !!error.fields?.revision;
 let passed = 0;
 async function test(name, run) { await run(); passed++; console.log('通过：' + name); }
+
+await test('401先返回密码页，不误报版本过期、不重试写入', async () => {
+  const f = fixture();
+  f.env.fetchHook = () => response('new-page', { code: 'CONSOLE_AUTH_REQUIRED' }, 401);
+  await assert.rejects(f.call('/api/settings', { method: 'POST', body: '{}' }), error => error.code === 'CONSOLE_AUTH_REQUIRED');
+  assert.deepEqual(f.env.redirects, ['/login']);
+  assert.equal(f.guard.isStale(), false); assert.equal(f.dialog.open, false);
+  assert.equal(f.env.requests.length, 1); assert.equal(f.env.progress, 0);
+});
 
 await test('页面版本从初始meta冻结，所有请求携同一header且不能由响应升级', async () => {
   const f = fixture(); f.env.meta.content = 'changed-dom';

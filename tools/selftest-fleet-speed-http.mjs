@@ -8,7 +8,7 @@ process.env.CW_DATA_DIR=directory;process.env.CW_CONFIG_PACK=path.join(directory
 fs.writeFileSync(process.env.CW_CONFIG_PACK,JSON.stringify([[0,'WorldParamCfg',{data:[{paramName:'行军加速消耗',paramValue:30}]}],
   [1,'BuildingUnlockCfg',{data:[1,2,3].map(i=>({buildingType:'远征船',buildingId:i+'远征船'}))}]]));
 const {saveStore}=await import('../src/accounts.mjs');
-const {createConsole}=await import('../src/server.mjs');
+const {createConsole}=await import('./fixtures/console-server.mjs');
 const {createUsageLedger,loadAutomationSettings}=await import('../src/automation-settings.mjs');
 const {observeOwnedFleets,ownedFleetCatalog}=await import('../src/fleet-catalog.mjs');
 saveStore({activeId:'speed-a',accounts:['speed-a','speed-b'].map(id=>({id,label:id,url:'ws://invalid.invalid',login:{},automation:{enabled:false,paused:false}}))});

@@ -36,6 +36,7 @@
     const picker = document.getElementById('theme-picker');
     const trigger = document.getElementById('theme-trigger');
     const menu = document.getElementById('theme-menu');
+    if (!picker || !trigger || !menu) return;
     const options = Array.from(menu.querySelectorAll('[data-theme-option]'));
 
     renderControls = () => {

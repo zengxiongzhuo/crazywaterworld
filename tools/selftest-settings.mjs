@@ -1012,7 +1012,7 @@ try {
     process.env.CW_DATA_DIR = directory;
     const { saveStore, DATA_DIR } = await import('../src/accounts.mjs'); assert.equal(DATA_DIR, directory);
     saveStore({ activeId: 'qa-a', accounts: ['qa-a', 'qa-b'].map(id => ({ id, label: id, url: 'ws://127.0.0.1:1', login: {}, automation: { enabled: false, paused: true } })) });
-    const { createConsole } = await import('../src/server.mjs'); const app = createConsole({ port: 0 }); await app.listen();
+    const { createConsole } = await import('./fixtures/console-server.mjs'); const app = createConsole({ port: 0 }); await app.listen();
     const origin = 'http://127.0.0.1:' + app.server.address().port;
     const api = async (account, route, body) => { const response = await fetch(origin + route + '?account=' + account, body ? { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) } : {}); return { status: response.status, body: await response.json() }; };
     try {

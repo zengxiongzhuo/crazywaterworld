@@ -11,7 +11,7 @@ process.env.CW_RESOURCE_DIR = path.join(directory, 'resources');
 process.env.CW_CA_DIR = path.join(directory, 'certificates');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { startConsole } = await import('./start-console.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { GameClient } = await import('../src/client.mjs');
 let connections = 0, passed = 0;
 GameClient.prototype.connect = async () => { connections++; throw Error('监听测试禁止连接游戏'); };

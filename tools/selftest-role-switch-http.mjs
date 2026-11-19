@@ -12,7 +12,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([[0, 'HeroCfg', { da
   Array.from({ length: 4 }, (_, index) => ({ id: 'hero-' + index, name: '测试英雄' + index, quality: 'BLUE' })),
 }]]));
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { loadStore, saveStore, ACCOUNTS_PATH, upsertAccount, rememberWorlds } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings, createUsageLedger } = await import('../src/automation-settings.mjs');
 const { exportAccountBackup, parseAccountBackup, importAccountBackup, previewAccountImport } = await import('../src/account-backup.mjs');

@@ -12,7 +12,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { defaultSettings, loadAutomationSettings, validateSettings, importAutomationSettings, exportAutomationSettings } = await import('../src/automation-settings.mjs');
 const { APPOINTMENT_PRIORITIES, DEFAULT_APPOINTMENT_PRIORITIES } = await import('../src/appointment-priorities.mjs');
 saveStore({ activeId: 'appoint-a', accounts: ['appoint-a', 'appoint-b', 'appoint-old'].map(id => ({

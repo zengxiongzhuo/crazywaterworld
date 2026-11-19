@@ -33,7 +33,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([
 const { saveStore, DATA_DIR } = await import('../src/accounts.mjs');
 assert.equal(DATA_DIR, dir);
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 let logins = 0;
 let finishedLogins = 0;
 const live = new Set();

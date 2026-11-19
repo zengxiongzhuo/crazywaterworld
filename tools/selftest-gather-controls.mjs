@@ -100,7 +100,7 @@ try {
     })) });
     const s = defaultSettings(); s.gather.diving = s.gather.salvage = true;
     saveAutomationSettings('qa-gather-a', s, { revision: 0 });
-    const { createConsole } = await import('../src/server.mjs'); const app = createConsole({ port: 0 }); await app.listen();
+    const { createConsole } = await import('./fixtures/console-server.mjs'); const app = createConsole({ port: 0 }); await app.listen();
     const api = async (route, body, account = 'qa-gather-a') => {
       const response = await fetch('http://127.0.0.1:' + app.server.address().port + '/api/' + route + '?account=' + account,
         { method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });

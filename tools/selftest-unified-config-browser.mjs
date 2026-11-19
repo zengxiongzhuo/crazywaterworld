@@ -18,7 +18,7 @@ const { saveStore } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings, settingsUiRules } = await import('../src/automation-settings.mjs');
 const { GameClient } = await import('../src/client.mjs');
 const { observeOwnedFleets } = await import('../src/fleet-catalog.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 let connections = 0;
 GameClient.prototype.connect = async () => { connections++; throw new Error('配置验收禁止连接游戏'); };
 saveStore({ version: 1, activeId: 'config-a', accounts: ['config-a', 'config-b'].map((id, index) => ({

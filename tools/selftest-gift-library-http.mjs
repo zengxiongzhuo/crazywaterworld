@@ -22,7 +22,7 @@ const { giftCodeStatus } = await import('../src/gift-codes.mjs');
 const originalRefresh = publicGiftCodes.refresh;
 let refreshes = 0;
 publicGiftCodes.refresh = async () => { refreshes++; return publicGiftCodes.view(); };
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const account = id => ({ id, label: '测试账号 ' + id, url: 'wss://fixture.invalid', login: {},
   automation: { enabled: false, autoStart: false, paused: false } });
 const historyFile = id => path.join(directory, 'gift-codes-' + encodeURIComponent(id) + '.json');

@@ -51,6 +51,7 @@ export function chrome() {
           <span id="loop-hint" className="sr-only" role="status" />
         </div>
         <span id="hint" className="warn" />
+        <Button id="console-logout" type="button" size="sm" variant="outline" title="退出控制台，后台挂机继续运行">退出登录</Button>
         <div id="theme-picker" className="theme-picker">
           <Button id="theme-trigger" type="button" size="icon-sm" variant="outline" className="pointer-coarse:size-10" aria-label="切换主题，当前为跟随系统" title="切换主题，当前为跟随系统" aria-haspopup="menu" aria-controls="theme-menu" aria-expanded="false">
             {themes.map(([mode, , Icon]) => <span key={mode} data-theme-icon={mode} hidden={mode !== "system"}><Icon aria-hidden="true" /></span>)}

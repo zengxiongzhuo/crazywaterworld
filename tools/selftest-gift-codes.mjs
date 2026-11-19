@@ -103,7 +103,7 @@ const accountRow=(id,extra={})=>({id,label:'账号'+id,url:'ws://127.0.0.1:1',lo
 fs.writeFileSync(path.join(process.env.CW_DATA_DIR,'accounts.json'),JSON.stringify({version:1,activeId:'h1',accounts:[
   accountRow('h1'),accountRow('h2',{automation:{paused:true,enabled:false}}),accountRow('h3'),accountRow('h4'),accountRow('h5'),accountRow('h6'),
 ]}));
-const {createConsole}=await import('../src/server.mjs');
+const {createConsole}=await import('./fixtures/console-server.mjs');
 const {PAGE}=await import('../src/page.mjs');
 const app=createConsole({port:0});await app.listen();
 try {

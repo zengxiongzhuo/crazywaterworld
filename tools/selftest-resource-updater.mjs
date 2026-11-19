@@ -400,7 +400,7 @@ try {
   });
   await check('控制台启动、状态接口和关闭接入更新器，无需游戏账号', async () => {
     const f = fixture(); process.env.CW_RESOURCE_DIR = f.root;
-    const { createConsole } = await import('../src/server.mjs');
+    const { createConsole } = await import('./fixtures/console-server.mjs');
     const app = createConsole({ port: 0, resourceUpdater: f.updater, protocol: {} });
     try {
       const url = await app.listen(); const response = await fetch(url + '/api/resources'); const view = await response.json();

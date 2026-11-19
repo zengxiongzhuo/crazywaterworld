@@ -70,6 +70,8 @@ import { readFleetFormations, initializeFleetFormation } from './fleet-formation
 import { getProtocol, getProtocolSource } from './proto.mjs';
 import { protocolSourceInfo } from './protocol-source.mjs';
 import { PAGE } from './page.mjs';
+import { LOGIN_PAGE } from './console-login-page.mjs';
+import { createConsoleAuth } from './console-auth.mjs';
 import { iconThumb } from './art-thumbs.mjs';
 import { listWorlds, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
@@ -163,10 +165,12 @@ const STATE_TEXT = {
 };
 
 export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs, resourceUpdates = false, resourceUpdater = null, protocol: protocolOverride, giftCodeUpdates = resourceUpdates,
-  rotationNow = Date.now, rotationAutomatic = true,
+  rotationNow = Date.now, rotationAutomatic = true, authentication = true,
   alipayLoginController = null, wechatLoginController = null,
   captureController = { startCapture, stopCapture, captureState, inspectCaptureRecovery, recoverCapture } } = {}) {
   host = normalizeConsoleHost(host);
+  // 仅隔离业务测试通过构造参数关闭鉴权；启动入口默认始终开启。
+  const consoleAuth = authentication === false ? null : createConsoleAuth({ loginPage: LOGIN_PAGE });
   const consoleVersion = createConsoleVersion(PAGE);
   const pageRaw = Buffer.from(renderVersionedPage(PAGE, consoleVersion));
   const pageAsset = { raw: pageRaw, gzip: zlib.gzipSync(pageRaw, { level: 9 }),
@@ -2176,6 +2180,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   // ---- 路由 -----------------------------------------------------------------
 
   async function handle(req, res, body) {
+    if (consoleAuth && !consoleAuth.authorize(req, res)) return;
     const parsed = new URL(req.url, 'http://localhost');
     res.setHeader('X-CW-Console-Version', consoleVersion);
     if (serveClientAsset(req, res, parsed.pathname)) return;
@@ -2229,7 +2234,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         });
       }
       if (route === 'GET /') {
-        const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-cache', etag: pageAsset.etag, vary: 'Accept-Encoding' };
+        const headers = { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'private, no-store', etag: pageAsset.etag, vary: 'Accept-Encoding' };
         if (req.headers['if-none-match'] === pageAsset.etag) {
           res.writeHead(304, headers);
           res.end();
@@ -2810,6 +2815,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         res.account = parsed.searchParams.get('account');
         res.allAccounts = parsed.searchParams.get('scope') === 'all';
         streams.add(res);
+        consoleAuth?.trackStream(req, res);
         res.once('close', () => streams.delete(res));
         const logSession = sessions.get(res.account);
         const logSessions = res.allAccounts ? [...sessions.values()] : logSession ? [logSession] : [];
@@ -4958,6 +4964,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   const server = http.createServer((req, res) => {
     res.on('error', () => { streams.delete(res); res.destroy(); });
     req.on('error', () => res.destroy());
+    if (consoleAuth?.intercept(req, res)) return;
     req.setEncoding('utf8');
     let body = '';
     req.on('data', (chunk) => {
@@ -5009,6 +5016,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       });
     },
     close: async () => {
+      consoleAuth?.close();
       giftAutomation.close();
       closing = true;
       if (settingsWatchStarted) fs.unwatchFile(settingsFile(), settingsFileChanged);

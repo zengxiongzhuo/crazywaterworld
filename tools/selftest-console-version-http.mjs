@@ -11,7 +11,7 @@ const {GameClient}=await import('../src/client.mjs');
 let connections=0;
 GameClient.prototype.connect=async()=>{connections++;throw Error('Test must not connect to a game');};
 const {saveStore}=await import('../src/accounts.mjs');
-const {createConsole}=await import('../src/server.mjs');
+const {createConsole}=await import('./fixtures/console-server.mjs');
 const {settingsFile,loadAutomationSettings}=await import('../src/automation-settings.mjs');
 saveStore({activeId:'version-test',accounts:[{id:'version-test',label:'版本测试',url:'wss://fixture.invalid',login:{},automation:{enabled:false,autoStart:false,paused:true}}]});
 let app,base,passed=0;

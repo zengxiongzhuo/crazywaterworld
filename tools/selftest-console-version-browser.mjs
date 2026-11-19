@@ -18,7 +18,7 @@ let connections = 0;
 GameClient.prototype.connect = async () => { connections++; throw Error('版本浏览器测试禁止连接真实游戏'); };
 const { saveStore } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings, settingsFile } = await import('../src/automation-settings.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const id = 'console-version-browser';
 saveStore({ activeId: id, accounts: [{ id, label: '页面版本浏览器测试', url: 'ws://invalid.invalid', login: {},
   automation: { enabled: false, autoStart: false, paused: true } }] });

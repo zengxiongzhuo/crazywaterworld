@@ -13,7 +13,7 @@ const { saveStore } = await import("../src/accounts.mjs");
 const { saveAutomationSettings, loadAutomationSettings } = await import(
   "../src/automation-settings.mjs"
 );
-const { createConsole } = await import("../src/server.mjs");
+const { createConsole } = await import("./fixtures/console-server.mjs");
 const { GameClient } = await import("../src/client.mjs");
 let connections = 0;
 GameClient.prototype.connect = async () => {

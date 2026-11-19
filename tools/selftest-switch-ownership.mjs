@@ -246,7 +246,7 @@ try {
     initial.heroes.level = false; initial.heroes.star = true; initial.heroes.skill = false;
     initial.heroes.enabled = true; initial.loop.heroes = false;
     saveAutomationSettings('switch-a', validateSettings(initial), { revision: 0 });
-    const { createConsole } = await import('../src/server.mjs');
+    const { createConsole } = await import('./fixtures/console-server.mjs');
     const app = createConsole({ port: 0, protocol: {} }); await app.listen();
     const api = async (route, body, account = 'switch-a') => {
       const response = await fetch('http://127.0.0.1:' + app.server.address().port + '/api/' + route + '?account=' + account, {

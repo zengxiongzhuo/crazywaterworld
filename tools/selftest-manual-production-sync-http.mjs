@@ -14,7 +14,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([
 ]));
 const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { automationTasks } = await import('../src/automation.mjs');
 const { beginOrderMaterialSpend, pendingOrderMaterialSpends, pendingFarmMaterialSpends } = await import('../src/order-reservations.mjs');
 const { factoryProductionOperation } = await import('../src/spend-evidence.mjs');

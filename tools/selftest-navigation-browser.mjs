@@ -13,7 +13,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { saveStore } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 let connections = 0;
 const originalConnect = GameClient.prototype.connect;
 GameClient.prototype.connect = async () => { connections++; throw new Error('导航验收禁止连接游戏'); };

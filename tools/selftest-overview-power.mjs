@@ -16,7 +16,7 @@ for (const name of ['OtherPlayerInfoRequest', 'OtherPlayerInfoResponse', 'SCPlay
 
 const { GameClient, toNumber } = await import('../src/client.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { rewardSchedule } = await import('../src/reward-schedule.mjs');
 const { runLoop } = await import('../src/loop.mjs');
 const { createUsageLedger, defaultSettings } = await import('../src/automation-settings.mjs');

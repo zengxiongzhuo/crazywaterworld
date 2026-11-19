@@ -16,7 +16,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([[0, 'AppointPosCfg'
 ] }]]));
 
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { defaultSettings, hasExtraWork } = await import('../src/automation-settings.mjs');
 saveStore({ activeId: 'appointments-only', accounts: [{
   id: 'appointments-only', label: '离线委任测试', url: 'ws://invalid.invalid', login: {}, automation: { enabled: false },

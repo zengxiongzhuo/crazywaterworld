@@ -12,7 +12,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK,JSON.stringify([
 ]));
 const {saveStore}=await import('../src/accounts.mjs');
 const {defaultSettings,saveAutomationSettings,loadAutomationSettings}=await import('../src/automation-settings.mjs');
-const {createConsole}=await import('../src/server.mjs');
+const {createConsole}=await import('./fixtures/console-server.mjs');
 const {observeOwnedFleets}=await import('../src/fleet-catalog.mjs');
 const {cityWarFleetStrategy}=await import('../src/city-war-settings.mjs');
 saveStore({activeId:'speed-browser',accounts:[{id:'speed-browser',label:'加速界面测试',url:'ws://invalid.invalid',login:{},automation:{enabled:false,paused:true}}]});

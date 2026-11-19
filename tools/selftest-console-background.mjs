@@ -15,7 +15,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 // before the temporary directory above has replaced the real account storage.
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { automationTasks } = await import('../src/automation.mjs');
 
 const connected = new Set();

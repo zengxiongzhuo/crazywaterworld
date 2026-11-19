@@ -7,7 +7,7 @@ const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-recovery-http-'));
 process.env.CW_DATA_DIR = directory;
 process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const events = [];
 let pending = true, recoveries = 0, fail = false, running = false, platform = null;
 const starts = [], stops = [];

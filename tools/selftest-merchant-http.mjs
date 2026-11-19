@@ -7,7 +7,7 @@ import path from 'node:path';
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-merchant-http-'));
 process.env.CW_DATA_DIR = directory;
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { saveAutomationSettings } = await import('../src/automation-settings.mjs');
 const { seasonalFixture } = await import('./fixtures/seasonal-suite.mjs');
 const f = seasonalFixture();

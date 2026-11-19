@@ -11,7 +11,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { createDeclaredProtocol } = await import('./fixtures/declared-protocol.mjs');
 const protocol = createDeclaredProtocol(['OnWaterRequest', 'OnWaterResponse', 'AllItemRequest', 'AllItemResponse', 'AllResourceRequest', 'AllResourceResponse']);
 const { automationTasks } = await import('../src/automation.mjs');

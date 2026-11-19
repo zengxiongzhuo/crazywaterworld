@@ -135,7 +135,7 @@ await check('个人求助读取失败显示未知，未知领取和暂停不重�
 });
 
 fs.writeFileSync(path.join(process.env.CW_DATA_DIR, 'accounts.json'), JSON.stringify({ version: 1, activeId: 'a', accounts: ['a', 'b'].map(id => ({ id, label: '隔离验证' + id, url: 'ws://127.0.0.1:1', login: {}, automation: { enabled: false, paused: true } })) }));
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const app = createConsole({ port: 0 }); await app.listen();
 const base = 'http://127.0.0.1:' + app.server.address().port;
 const request = async (route, account = 'a', body) => {

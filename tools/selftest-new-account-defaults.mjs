@@ -13,7 +13,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore, upsertAccount } = await import('../src/accounts.mjs');
 const { loadAutomationSettings } = await import('../src/automation-settings.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 
 let connections = 0;
 GameClient.prototype.connect = async () => {

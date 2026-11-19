@@ -11,7 +11,7 @@ process.env.CW_RESOURCE_AUTO_UPDATE = '0';
 const { siliconFixture } = await import('./fixtures/silicon.mjs');
 const { readSiliconOverview } = await import('../src/silicon-overview.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { PAGE } = await import('../src/page.mjs');
 let passed = 0, app;
 const read = (f, options) => readSiliconOverview(f.client, f.protocol, f.config, f.player, options);

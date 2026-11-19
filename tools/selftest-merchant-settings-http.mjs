@@ -12,7 +12,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { defaultSettings, loadAutomationSettings, settingsUiRules } = await import('../src/automation-settings.mjs');
 const { watchMerchant } = await import('../src/merchant-monitor.mjs');
 const { rewardSchedule } = await import('../src/reward-schedule.mjs');

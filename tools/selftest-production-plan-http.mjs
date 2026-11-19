@@ -25,7 +25,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify(Object.entries(confi
 
 const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { defaultSettings, saveAutomationSettings } = await import('../src/automation-settings.mjs');
 const { watchHeroRaidPushes } = await import('../src/hero-raid-automation.mjs');
 const requests = ['OnWater', 'AllItem', 'AllResource', 'GameEffect', 'MonthCard', 'AllHero', 'WeekInfo', 'WeekOrderInfo', 'CargoShips', 'GuildOrder', 'RadarInfo'];

@@ -9,7 +9,7 @@ process.env.CW_DATA_DIR = directory;
 process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { loadStore, saveStore, upsertAccount } = await import('../src/accounts.mjs');
 const { automationTasks } = await import('../src/automation.mjs');
 const { createUsageLedger } = await import('../src/automation-settings.mjs');

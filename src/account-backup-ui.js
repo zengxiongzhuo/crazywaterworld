@@ -76,6 +76,7 @@ async function downloadAccounts(includeSettings) {
     assertCurrent();
     const headers = { 'content-type': 'application/json', ...(pageVersion ? { 'X-CW-Console-Version': pageVersion } : {}) };
     const response = await fetch(path, { method: 'POST', headers, body: JSON.stringify(body) });
+    globalThis.cwConsoleAuth?.check(response);
     assertCurrent(response);
     if (!response.ok) {
       const data = await response.json();

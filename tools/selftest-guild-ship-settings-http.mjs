@@ -9,7 +9,7 @@ process.env.CW_DATA_DIR = directory;
 process.env.CW_CONFIG_PACK = path.join(directory, 'config.json');
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { defaultSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 saveStore({ activeId: 'ship-a', accounts: ['ship-a', 'ship-b'].map(id => ({
   id, label: id, url: 'ws://invalid.invalid', login: {}, automation: { enabled: false },

@@ -9,7 +9,7 @@ process.env.CW_DATA_DIR = directory; process.env.CW_CONFIG_PACK = path.join(dire
 const { siliconFixture } = await import('./fixtures/silicon.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { GameClient } = await import('../src/client.mjs');
 GameClient.prototype.connect = async () => { throw Error('快捷操作验收禁止建立真实游戏连接'); };
 const f = siliconFixture();

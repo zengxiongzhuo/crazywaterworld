@@ -516,7 +516,7 @@ await test('四项经过真实整轮入口；赛季宝箱默认关闭时不读�
 await test('控制台在登录时记住擂台赛推送', async () => {
   const { GameClient } = await import('../src/client.mjs');
   const { saveStore } = await import('../src/accounts.mjs');
-  const { createConsole } = await import('../src/server.mjs');
+  const { createConsole } = await import('./fixtures/console-server.mjs');
   const live = new Set();
   const push = protocol.SCTournamentOpen.decode(protocol.SCTournamentOpen.encode({ contestId: 7, state: { currentStageId: 4, nextMatchTimeId: 0, nextMatchTime: 0 }, lastClaimDailyGiftTime: 456, adjustHero: [] }).finish());
   Object.defineProperty(GameClient.prototype, 'connected', { get() { return live.has(this); } });

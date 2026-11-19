@@ -351,7 +351,7 @@ assert.match(PAGE, /<button\b[^>]*data-tab="activities"[^>]*aria-label="活动"/
 assert(!PAGE.includes('data-resource-tab="activities"'), '活动独立为顶级导航');
 assert(!PAGE.includes('材料与订单'), '活动页使用活动名称');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 saveStore({ activeId: 'activity-test', accounts: [{ id: 'activity-test', url: 'ws://invalid.invalid', login: {}, automation: { enabled: false } }] });
 const app = createConsole({ port: 0 });
 const gate = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };

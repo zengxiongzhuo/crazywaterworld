@@ -152,7 +152,7 @@ try {
     saveStore({ version: 1, activeId: 'module-a', accounts: ['module-a', 'module-b'].map(id => ({ id, label: '模块测试', url: 'ws://127.0.0.1:1', login: {}, automation: { paused: true } })) });
     const settings = validateSettings(defaultSettings()); settings.radar.repairIdle = settings.museum.enabled = true;
     saveAutomationSettings('module-a', settings, { revision: 0 });
-    const { createConsole } = await import('../src/server.mjs'); const app = createConsole({ port: 0 }); await app.listen();
+    const { createConsole } = await import('./fixtures/console-server.mjs'); const app = createConsole({ port: 0 }); await app.listen();
     const api = async (route, body, account = 'module-a') => {
       const response = await fetch('http://127.0.0.1:' + app.server.address().port + '/api/' + route + '?account=' + account,
         { method: body ? 'POST' : 'GET', headers: { 'content-type': 'application/json' }, ...(body ? { body: JSON.stringify(body) } : {}) });

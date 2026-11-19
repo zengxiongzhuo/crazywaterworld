@@ -12,7 +12,7 @@ const { installResourceFieldMap } = await import('./fixtures/resource-field-map.
 const { defaultSettings, saveAutomationSettings, createUsageLedger } = await import('../src/automation-settings.mjs');
 const { reserveDispatch, legacyFleetReservationReason, dispatchReservationReason } = await import('../src/fleet-availability.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const f = resourceFieldFixture(), cleanupMap = installResourceFieldMap(f);
 f.config.tables.BuildingUnlockCfg = { data: [1, 2, 3].map(n => ({ buildingId: n + '远征船', buildingType: '远征船' })) };
 let app, passed = 0;

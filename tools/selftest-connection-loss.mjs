@@ -13,7 +13,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 // ---- 控制台路由 ----
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { PAGE } = await import('../src/page.mjs');
 const { operationLabels } = await import('../src/operation-labels.mjs');
 

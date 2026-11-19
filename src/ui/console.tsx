@@ -43,4 +43,5 @@ export function stagePanel() {
 }
 export * from "./layout"
 export * from "./pages"
+export * from "./console-login"
 export * from "./settings"

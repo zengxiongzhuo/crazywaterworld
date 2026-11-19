@@ -12,7 +12,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { accountFromCredential, saveStore, loadStore } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 let connections = 0;
 GameClient.prototype.connect = async () => { connections++; throw new Error('浏览器验收禁止连接游戏'); };
 const account = accountFromCredential({ url: 'wss://fixture.invalid', source: 'mitm', login: {

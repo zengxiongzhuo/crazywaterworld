@@ -12,7 +12,7 @@ process.env.CW_RESOURCE_AUTO_UPDATE = '0';
 fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { saveStore } = await import('../src/accounts.mjs');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { loadAutomationSettings } = await import('../src/automation-settings.mjs');
 let connections = 0;
 GameClient.prototype.connect = async () => { connections++; throw new Error('名单测试禁止连接游戏'); };

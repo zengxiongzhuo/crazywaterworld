@@ -16,7 +16,7 @@ const { getConfig } = await import('../src/config.mjs');
 const { saveStore } = await import('../src/accounts.mjs');
 const { defaultSettings, saveAutomationSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 GameClient.prototype.connect = async () => { throw new Error('浏览器验收禁止连接真实游戏'); };
 const config = getConfig();
 const owned = config.tables.HeroCfg.data.filter(hero => ['BLUE', 'PURPLE', 'ORANGE', 'RED'].includes(hero.quality));

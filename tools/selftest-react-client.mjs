@@ -13,7 +13,7 @@ process.env.CW_CONFIG_PACK = path.join(directory, "config.json");
 process.env.CW_RESOURCE_AUTO_UPDATE = "0";
 fs.writeFileSync(process.env.CW_CONFIG_PACK, "[]");
 const { saveStore, loadStore } = await import("../src/accounts.mjs");
-const { createConsole } = await import("../src/server.mjs");
+const { createConsole } = await import("./fixtures/console-server.mjs");
 const { GameClient } = await import("../src/client.mjs");
 let connections = 0;
 GameClient.prototype.connect = async () => {
@@ -148,6 +148,22 @@ try {
     );
     assert.equal(seen, controller.signal);
     assert.throws(() => createAccountApi(""), /选择账号/);
+  });
+
+  await test("401登录失效优先于版本检查，保存失败不重试", async () => {
+    let calls = 0;
+    const unauthorized = createAccountApi("a", async () => {
+      calls++;
+      return new Response("not-json", {
+        status: 401,
+        headers: { "X-CW-Console-Version": "other-version" },
+      });
+    });
+    await assert.rejects(
+      unauthorized.save(initial.settings, 0),
+      (error) => error instanceof ApiError && error.status === 401,
+    );
+    assert.equal(calls, 1);
   });
 
   let browserModuleSequence = 0;

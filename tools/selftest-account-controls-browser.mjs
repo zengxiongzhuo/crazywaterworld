@@ -16,7 +16,7 @@ const { accountFromCredential, saveStore, loadStore } = await import('../src/acc
 const { saveAutomationSettings, settingsFromNative } = await import('../src/automation-settings.mjs');
 const { automationTasks } = await import('../src/automation.mjs');
 const { GameClient } = await import('../src/client.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const rows = ['first', 'second'].map((id, index) => ({
   ...accountFromCredential({ url: 'wss://fixture.invalid', source: 'mitm',
     login: { eworldParams: { openId: id } } }, { label: index ? '第二个验收账号' : '当前验收账号' }),

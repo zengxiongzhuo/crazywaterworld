@@ -18,7 +18,7 @@ process.env.CW_RESOURCE_APP_VERSION = '1.14.5';
 const pack = crops => JSON.stringify([[0, 'FarmlandPlantCfg', { data: crops.map(id => ({ id })) }]]);
 fs.writeFileSync(process.env.CW_CONFIG_PACK, pack(['wheat']));
 const { saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { GameClient } = await import('../src/client.mjs');
 const { defaultSettings, saveAutomationSettings } = await import('../src/automation-settings.mjs');
 const { writeResourceCheck, activeResources } = await import('../src/resource-store.mjs');

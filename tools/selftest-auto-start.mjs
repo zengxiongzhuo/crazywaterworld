@@ -13,7 +13,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 
 const { GameClient } = await import('../src/client.mjs');
 const { loadStore, saveStore } = await import('../src/accounts.mjs');
-const { createConsole } = await import('../src/server.mjs');
+const { createConsole } = await import('./fixtures/console-server.mjs');
 const { automationTasks } = await import('../src/automation.mjs');
 const { loadAutomationSettings, saveAutomationSettings, settingsFromNative } = await import('../src/automation-settings.mjs');
 

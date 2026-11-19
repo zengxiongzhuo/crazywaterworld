@@ -77,6 +77,8 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 
 `page.mjs` 在模块加载时生成完整 `PAGE`，页面文件变更后需重启控制台。
 
+- 控制台密码鉴权默认开启，`console-auth.mjs` 在读取业务请求体、静态资源和版本校验前检查会话。固定密码只放服务端；会话保存在内存，退出/到期/重启失效，退出网页登录不停止挂机。业务回归在设置临时 `CW_DATA_DIR` 后动态导入 `tools/fixtures/console-server.mjs`，由其显式注入 `authentication: false`；鉴权专项直接导入生产 `server.mjs`，不得按请求头、IP 或环境变量自动放行。
+
 - `src/ui/*.tsx` 经 esbuild 输出 `src/ui/dist/console.mjs`，为未迁移页面生成静态标记；这些服务端页面仍不能依赖 hooks 或事件属性。`src/ui/client/` 由 Vite 构建到 `src/ui/dist/client/`，登录设置已完整迁移为 React 19 客户端页面，首次打开时按需加载。
 - 未迁移页面继续使用原生 JS，`page.mjs` 的脚本与 `settings-ui.js`、`ui/progression.js`、`ui/activities.js`、地图、礼包和仓库脚本共享作用域。原页面仅通过根节点的 `data-account` 发布账号；React 独占登录设置根节点内部。新页面使用受控状态、明确账号的 API 客户端和接口契约，不调用共享作用域函数。
 - 界面采用 shadcn/ui new-york-v4 的默认 neutral 主题。`src/ui/{button,card,table,switch,badge,dialog}.tsx` 用官方样式字符串；`theme.css` 的 `@layer components` 按官方样式定义 input、select、textarea、checkbox、radio、range、summary、页签、弹窗和气泡，运行时脚本直接创建原生元素也能得到相同外观，不要再给控件写专用外观。换主色只改 `:root` 的 `--primary`、`--primary-foreground`。
