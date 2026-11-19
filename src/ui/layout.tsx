@@ -1,6 +1,6 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { Boxes, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, LayoutDashboard, Monitor, Moon, MoreHorizontal, ScrollText, Settings2, Ship, Sun, Swords, UsersRound, X } from "lucide-react"
+import { Boxes, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, LayoutDashboard, Monitor, Moon, MoreHorizontal, ScrollText, Settings2, Ship, Sun, Swords, Trophy, UsersRound, X } from "lucide-react"
 import { Button } from "./button"
 import { Badge } from "./badge"
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "./card"
@@ -13,6 +13,7 @@ import { LOG_GROUPS, LOG_GROUP_TONES } from "../log-categories.mjs"
 // 手机底栏使用短名。
 const tabs = [
   ["overview", "总览", "总览", LayoutDashboard],
+  ["results", "挂机成果", "成果", Trophy],
   ["settings", "挂机配置", "配置", Settings2], ["manual", "建筑一览", "建筑", Building2],
   ["stages", "挑战", "挑战", Swords], ["lineups", "阵容", "阵容", UsersRound],
   ["activities", "活动", "活动", CalendarDays], ["resources", "杂项", "杂项", Boxes],

@@ -1,5 +1,6 @@
 // Operation names shared by the server journal and the browser's network errors.
 export const operationLabels = {
+  '/api/automation-results': '查看挂机成果',
   '/api/world/production-plan': '计算订单联合排产',
   '/api/merchant': '查看海商王实况', '/api/merchant/history': '查看海商王成交记录', '/api/merchant/step': '海商王单步验证',
   '/api/activities/run': '单次执行活动',

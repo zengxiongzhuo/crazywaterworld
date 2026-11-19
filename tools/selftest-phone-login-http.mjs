@@ -176,14 +176,17 @@ const app = createConsole({ port: 0,
 let closed = false;
 try {
   const root = await app.listen();
+  const selectedId = () => loadStore().selectedRoles['fixture-game-id'];
+  const selectedAccount = () => loadStore().accounts.find(row => row.id === selectedId());
   async function request(route, body) {
     const response = await nativeFetch(root + '/api/accounts/phone-login' + route, {
       method: body === undefined ? 'GET' : 'POST',
       body: body === undefined ? undefined : JSON.stringify(body),
     });
-    return { status: response.status, data: await response.json() };
+    const data = await response.json();
+    return { status: response.status, data };
   }
-  async function accountApi(route, body, id = 'fixture-game-id') {
+  async function accountApi(route, body, id = selectedId() || 'fixture-game-id') {
     const response = await nativeFetch(root + '/api/' + route + '?account=' + encodeURIComponent(id), {
       method: body === undefined ? 'GET' : 'POST',
       body: body === undefined ? undefined : JSON.stringify({ confirm: true, ...body }),
@@ -398,25 +401,31 @@ try {
   assert.equal(saved.data.selectedRole.nickname, '星海船长');
   assert.equal(saved.data.selectedRole.worldName, '海港2服');
   assert.equal(loadStore().activeId, 'fixture-game-id');
-  assert.equal(loadStore().accounts.length, 1);
-  assert.equal(loadStore().accounts[0].login.worldId, 3000000002);
-  assert.equal(loadStore().accounts[0].lastSeen.nickname, '星海船长');
-  assert.equal(loadStore().accounts[0].automation.autoStart, false);
+  assert.equal(loadStore().accounts.length, 2, '同账号其他区服角色也分别保存');
+  assert.equal(selectedAccount().login.worldId, 3000000002);
+  assert.equal(selectedAccount().lastSeen.nickname, '星海船长');
+  assert.equal(selectedAccount().automation.autoStart, false);
   assert.equal((await accountApi('loop')).running, false);
   assert.equal(connections.length, beforeSaveConnections, '新账号保存和读取状态不启动挂机连接');
   const configured = await accountApi('settings');
   configured.settings.schedule.mail = true;
   await accountApi('settings', { settings: configured.settings, revision: configured.revision, baseRevision: configured.baseRevision });
   await accountApi('accounts/pause', { paused: false, start: true });
-  const initialSession = await waitForLoop('fixture-game-id', 3000000002);
+  let initialSession = await waitForLoop('fixture-game-id', 3000000002);
   assert.equal(initialSession.loop.rounds, 0);
-  assert.equal(loadStore().accounts[0].automation.autoStart, true);
+  assert.equal(selectedAccount().automation.autoStart, true);
   const refreshRunning = await request('', { confirm: true, phone, password });
   const oldRunningClient = initialSession.client;
   assert.equal((await request('/save', { confirm: true, id: refreshRunning.data.id, choiceId: refreshRunning.data.choices[0].id })).status, 200);
-  await waitForLoop('fixture-game-id', 3000000001);
+  assert.equal(selectedAccount().automation.autoStart, false, '新选区服沿用自己的启停选择');
+  await accountApi('loop/stop', {}, 'fixture-game-id');
+  const firstRoleConfigured = await accountApi('settings');
+  firstRoleConfigured.settings.schedule.mail = true;
+  await accountApi('settings', { settings: firstRoleConfigured.settings, revision: firstRoleConfigured.revision, baseRevision: firstRoleConfigured.baseRevision });
+  await accountApi('accounts/pause', { paused: false, start: true });
+  initialSession = await waitForLoop(selectedId(), 3000000001);
   assert.equal(oldRunningClient.connected, false);
-  assert.equal(loadStore().accounts[0].automation.autoStart, true);
+  assert.equal(selectedAccount().automation.autoStart, true);
 
   // 顶号等待中保存同一角色的新凭证，取消旧等待后直接接续挂机。
   const loginSettings = await accountApi('login-settings');
@@ -441,7 +450,7 @@ try {
   assert.equal((await request('/save', {
     confirm: true, id: sameRoleRefresh.data.id, choiceId: sameRoleRefresh.data.choices[0].id,
   })).status, 200);
-  await waitForLoop('fixture-game-id', 3000000001);
+  await waitForLoop(selectedId(), 3000000001);
   assert.equal(previousRecoveryController.signal.aborted, true);
   await previousRecoveryJob;
   assert.equal(initialSession.loginRecoveryJob, null);
@@ -450,9 +459,9 @@ try {
   assert.equal(connections.length, beforeSameRoleSave + 1, '新凭证只建立一次挂机连接');
   assert.notEqual(initialSession.loop.job, previousLoopJob);
   assert.equal(liveClients.size, 1);
-  assert.equal(loadStore().accounts[0].automation.autoStart, true);
-  await disconnect('fixture-game-id');
-  assert.equal(loadStore().accounts[0].automation.autoStart, false);
+  assert.equal(selectedAccount().automation.autoStart, true);
+  await disconnect(selectedId());
+  assert.equal(selectedAccount().automation.autoStart, false);
   assert.equal((await request('/save', { confirm: true, id: preview.data.id, choiceId: preview.data.choices[0].id })).status, 400);
 
   // 所有短信关联账号及其已有角色都进入同一列表，选择第二个 APP 账号持久化到正确身份。
@@ -504,9 +513,9 @@ try {
   roleLists.set('fixture-game-id', previousRoles);
 
   // 已在线账号使用现有读通道，不额外登录或关闭现有连接。
-  const session = app.sessions.get('fixture-game-id');
+  const session = app.sessions.get(selectedId());
   const activeClient = new GameClient({ protocol: {} });
-  activeClient.login = loadStore().accounts.find(row => row.id === 'fixture-game-id').login;
+  activeClient.login = selectedAccount().login;
   liveClients.add(activeClient);
   session.client = activeClient;
   session.player = { playerId: 11, nickname: '海风船长', worldId: 3000000010 };
@@ -521,10 +530,10 @@ try {
   const sameRole = await request('/save', { confirm: true, id: reused.data.id, choiceId: reused.data.choices[0].id });
   assert.equal(sameRole.data.account.status.connected, true);
   assert.equal(activeClient.connected, true);
-  assert.equal(loadStore().accounts[0].login.worldId, 3000000001);
-  assert.equal(loadStore().accounts[0].lastSeen.worldId, 3000000010);
+  assert.equal(selectedAccount().login.worldId, 3000000001);
+  assert.equal(selectedAccount().lastSeen.worldId, 3000000010);
   assert.equal(session.loop.running, false);
-  assert.equal(loadStore().accounts[0].automation.autoStart, false);
+  assert.equal(selectedAccount().automation.autoStart, false);
 
   // 不同角色保存先停旧任务与连接，并把停止状态持久化。
   const changed = await request('', { confirm: true, phone, password });
@@ -535,15 +544,15 @@ try {
   assert.equal(changedRole.data.account.status.connected, false);
   assert.equal(activeClient.connected, false);
   assert.equal(session.loop.controller.signal.aborted, true);
-  assert.equal(loadStore().accounts[0].automation.enabled, false);
-  assert.equal(loadStore().accounts[0].login.worldId, 3000000002);
-  assert.equal(loadStore().accounts[0].lastSeen.nickname, '星海船长');
-  assert.equal(loadStore().accounts[0].label, '星海船长');
+  assert.equal(selectedAccount().automation.enabled, false);
+  assert.equal(selectedAccount().login.worldId, 3000000002);
+  assert.equal(selectedAccount().lastSeen.nickname, '星海船长');
+  assert.equal(selectedAccount().label, '星海船长');
 
   // 不同出生服的角色合入同服时仍按角色 ID 区分，避免继续操作旧角色。
   roleLists.get('fixture-game-id')[1].roleInfo.worldId = 3000000010;
   const mergedClient = new GameClient({ protocol: {} });
-  mergedClient.login = loadStore().accounts[0].login;
+  mergedClient.login = selectedAccount().login;
   liveClients.add(mergedClient);
   session.client = mergedClient;
   session.player = { playerId: 11, nickname: '海风船长', worldId: 3000000010 };
@@ -553,7 +562,7 @@ try {
   assert.equal(mergedSaved.data.account.status.connected, false);
   assert.equal(mergedClient.connected, false);
   assert.equal(mergedSaved.data.selectedRole.roleWorldId, 3000000010);
-  assert.equal(loadStore().accounts[0].login.worldId, 3000000002);
+  assert.equal(selectedAccount().login.worldId, 3000000002);
   const longRoleId = { low: 7, high: 3000000, unsigned: false };
   const exactLongRoleId = ((3000000n << 32n) + 7n).toString();
   assert.equal(describeRole({ id: longRoleId }).id, exactLongRoleId);
@@ -561,7 +570,7 @@ try {
   assert.equal((await listGroup({ request: async () => ({ worlds: [{ worldId: 3000000001, roleInfo: { id: longRoleId } }] }) }, 1))[0].role.id, exactLongRoleId);
   roleLists.get('fixture-game-id')[0].roleInfo.id = longRoleId;
   const longClient = new GameClient({ protocol: {} });
-  longClient.login = loadStore().accounts[0].login;
+  longClient.login = selectedAccount().login;
   liveClients.add(longClient);
   session.client = longClient;
   session.player = { playerId: longRoleId, nickname: '海风船长', worldId: 3000000010 };
@@ -569,29 +578,27 @@ try {
   assert.equal(longPreview.data.choices.length, 2);
   const longSaved = await request('/save', { confirm: true, id: longPreview.data.id, choiceId: longPreview.data.choices[0].id });
   assert.equal(longSaved.status, 200);
-  assert.equal(longSaved.data.account.status.connected, true);
+  assert.equal(longSaved.data.account.status.connected, false, '角色ID变化时另存角色，旧记录不会继承新角色连接');
+  assert.ok(longSaved.data.account.id.endsWith(exactLongRoleId));
   longClient.stop();
   session.client = null;
+  session.loop.running = false;
 
-  // 排队保存期间重复点击被拒绝，取消预览后排队动作不得再写入。
+  // 等待连接交接期间重复点击被拒绝，取消预览后不得再写入。
   const queuedPreview = await request('', { confirm: true, phone, password });
   let releaseQueue;
-  let queueAccepted;
-  const accepted = new Promise(resolve => { queueAccepted = resolve; });
-  let tail = new Promise(resolve => { releaseQueue = resolve; });
-  Object.defineProperty(session, 'queueTail', {
-    configurable: true, get: () => tail,
-    set(value) { tail = value; if (value) queueAccepted(); },
-  });
+  const queuedSession = app.sessions.get('fixture-game-id');
+  queuedSession.connectionDrain = new Promise(resolve => { releaseQueue = resolve; });
   const queuedPayload = { confirm: true, id: queuedPreview.data.id, choiceId: queuedPreview.data.choices[1].id };
-  const beforeQueuedSave = loadStore().accounts[0].login.worldId;
+  const beforeQueuedSave = selectedAccount().login.worldId;
   const queuedSave = request('/save', queuedPayload);
-  await accepted;
+  await sleep(30);
   assert.match((await request('/save', queuedPayload)).data.error, /正在处理/);
   await request('/cancel', { id: queuedPreview.data.id });
   releaseQueue();
+  queuedSession.connectionDrain = null;
   assert.equal((await queuedSave).status, 400);
-  assert.equal(loadStore().accounts[0].login.worldId, beforeQueuedSave);
+  assert.equal(selectedAccount().login.worldId, beforeQueuedSave);
 
   // 控制台关闭取消临时网关读取，防止遗留心跳和连接。
   let roleReadStarted;

@@ -247,12 +247,19 @@ try {
   assert.equal(protocolError.extra.messageName, 'SCUnknownFarmUpdate');
   assert.deepEqual(Buffer.from(JSON.parse(fs.readFileSync(protocolError.extra.protocolSnapshot, 'utf8')).frameHex, 'hex'), unknownFrame);
   assert.doesNotMatch(JSON.stringify(protocolError), /"frameHex":|abababab/, '终端与网页不输出原始二进制');
-  const stream = await fetch(root + '/api/events?account=trace-test');
+  const stream = await fetch(root + '/api/events?account=trace-test', { signal: AbortSignal.timeout(5000) });
   const reader = stream.body.getReader();
-  const streamed = new TextDecoder().decode((await reader.read()).value);
-  assert.match(streamed, /已脱敏/);
-  assert.doesNotMatch(streamed, /secret-/);
-  await reader.cancel();
+  const decoder = new TextDecoder();
+  let streamed = '';
+  try {
+    while (!streamed.includes('id: ' + protocolError.id + '\n') || !streamed.endsWith('\n\n')) {
+      const chunk = await reader.read();
+      assert.equal(chunk.done, false, '诊断日志到达前不能结束事件流');
+      streamed += decoder.decode(chunk.value, { stream: true });
+    }
+    assert.match(streamed, /已脱敏/);
+    assert.doesNotMatch(streamed, /secret-/);
+  } finally { await reader.cancel(); }
   const trace = fs.readFileSync(path.join(dataDir, 'protocol.log'), 'utf8');
   assert.match(trace, /\[MyFleetsResponse\] seq=7 .*20远征船/);
   assert.match(trace, /-> \[TreasureLootSendFleetsRequest\] seq=8 32B .*5001.*20远征船/);

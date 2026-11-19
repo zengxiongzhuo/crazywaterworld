@@ -73,7 +73,7 @@ function renderAlipayRoles() {
     if (choice.roleWorldId && String(choice.roleWorldId) !== String(choice.worldId)) {
       info.appendChild(el('p', 'dim', '原区服 ' + (choice.worldName || choice.worldId) + '，合服后位于 ' + alipayRoleWorld(choice)));
     }
-    if (choice.matched) info.appendChild(el('p', 'dim', '此账号已有保存记录，再次保存会更新所选角色和区服。'));
+    if (choice.matched) info.appendChild(el('p', 'dim', '此区服角色已有保存记录，再次保存会更新凭证；其他区服角色会分别保留。'));
     row.append(input, info);
     list.appendChild(row);
   }

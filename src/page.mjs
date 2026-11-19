@@ -3,7 +3,7 @@ import { SETTINGS_FORMAT, SETTINGS_SCHEMA_VERSION } from './automation-settings.
 import { operationLabels } from './operation-labels.mjs';
 import { LOG_CATEGORIES, LOG_GROUPS, LOG_GROUP_TONES } from './log-categories.mjs';
 import { createLogAccountLabels } from './log-accounts.mjs';
-import { chrome, journal, dialogs, templates, giftCodesPage, overviewPage, manualPage, inventoryPage, heroesPage, lineupsPage, guildPage, activitiesPage, accountPage, stagePanel, settingsPage } from './ui/dist/console.mjs';
+import { chrome, journal, dialogs, templates, giftCodesPage, overviewPage, manualPage, inventoryPage, heroesPage, lineupsPage, guildPage, activitiesPage, accountPage, stagePanel, settingsPage, resultsPage } from './ui/dist/console.mjs';
 const componentCss = readFileSync(new URL('./ui/dist/theme.css', import.meta.url), 'utf8');
 const consoleCss = readFileSync(new URL('./console.css', import.meta.url), 'utf8');
 const progressionScript = readFileSync(new URL('./ui/progression.js', import.meta.url), 'utf8');
@@ -26,6 +26,9 @@ const alipayLoginScript = readFileSync(new URL('./alipay-login-ui.js', import.me
 const accountAddScript = readFileSync(new URL('./account-add-ui.js', import.meta.url), 'utf8');
 const accountBackupScript = readFileSync(new URL('./account-backup-ui.js', import.meta.url), 'utf8');
 const accountPickerScript = readFileSync(new URL('./account-picker-ui.js', import.meta.url), 'utf8');
+const roleRotationScript = readFileSync(new URL('./role-rotation-ui.js', import.meta.url), 'utf8');
+const resultsScript = readFileSync(new URL('./automation-results-ui.js', import.meta.url), 'utf8');
+const resultsCss = readFileSync(new URL('./automation-results.css', import.meta.url), 'utf8');
 const helpTipsScript = readFileSync(new URL('./help-tips.js', import.meta.url), 'utf8');
 const appointmentsScript = readFileSync(new URL('./appointments-ui.js', import.meta.url), 'utf8');
 const appointmentsCss = readFileSync(new URL('./appointments.css', import.meta.url), 'utf8');
@@ -42,7 +45,7 @@ export const PAGE = `<!doctype html>
 <meta name="theme-color" content="#ffffff">
 <meta name="format-detection" content="telephone=no">
 <script id="theme-init">${themeScript}</script>
-<style>@layer properties, theme, base, components, page, utilities; @layer page { ${consoleCss} ${settingsCss} ${appointmentsCss} ${lineupCss} ${siliconOverviewCss} ${resourceFieldsCss} } ${componentCss}</style>
+<style>@layer properties, theme, base, components, page, utilities; @layer page { ${consoleCss} ${settingsCss} ${appointmentsCss} ${lineupCss} ${siliconOverviewCss} ${resourceFieldsCss} ${resultsCss} } ${componentCss}</style>
 </head>
 <body>
 ${chrome()}
@@ -53,6 +56,8 @@ ${chrome()}
   <section id="tab-overview">
     ${overviewPage()}
   </section>
+
+  <section id="tab-results" class="hidden">${resultsPage()}</section>
 
   <section id="tab-settings" class="hidden">
     ${settingsPage()}
@@ -669,6 +674,7 @@ consoleStore.subscribe((state, previous) => {
 syncAccountState(consoleStore.getState());
 
 function connectionStatus(status = {}) {
+  if (status?.switching) return '正在切换区服';
   status = status ?? {};
   if (status.syncingProduction) return '正在同步生产状态';
   if (status.paused) return '已暂停 · 可自行上号';
@@ -688,7 +694,7 @@ function connectionStatus(status = {}) {
 
 function connectionStatusKind(status = {}, connecting = false) {
   status = status ?? {};
-  return status.paused || status.loginBlocked || status.reconnecting || status.syncingProduction
+  return status.switching || status.paused || status.loginBlocked || status.reconnecting || status.syncingProduction
     || status.loopStopping || connecting || status.state === 'CONNECTING' || (status.looping && !status.connected)
     ? 'waiting' : status.connected ? 'done' : 'blocked';
 }
@@ -743,7 +749,9 @@ function refreshAccountStatuses() {
       const data = await call('/api/accounts');
       if (revision !== accountStatusRevision) return;
       accountStatusRevision++;
-      stateActions.mergeStatuses(data.accounts);
+      if (data.accounts.some(row => row.roleId && !accounts.some(account => account.id === row.id))) {
+        stateActions.replaceAccounts(data.accounts, data.activeId);
+      } else stateActions.mergeStatuses(data.accounts);
       renderAccountSelect();
     } catch {
       /* call 已记录错误，下次刷新继续读取。 */
@@ -833,13 +841,18 @@ function selectLoadedAccount(next) {
 }
 
 $('account').onchange = async () => {
-  const version = ++accountSelectionVersion;
+  if (typeof accountSwitchPending !== 'undefined' && accountSwitchPending) { $('account').value = current || ''; return; }
   const next = $('account').value;
-  const allowed = await configMayChangeAccount(next);
-  if (version !== accountSelectionVersion) return;
-  if (!allowed) { $('account').value = current || ''; return; }
-  selectLoadedAccount(next);
-  await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id: next }) });
+  if (!accounts.find(account => account.id === next)?.roleId) {
+    const version = ++accountSelectionVersion;
+    if (!await configMayChangeAccount(next) || version !== accountSelectionVersion) { $('account').value = current || ''; return; }
+    selectLoadedAccount(next);
+    await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id: next }) });
+    return;
+  }
+  try { await useAccountCard(next); }
+  catch (error) { reportError(error); }
+  finally { $('account').value = current || ''; }
 };
 $('account-pause').onclick = async () => {
   const account = current;
@@ -1684,19 +1697,41 @@ function table(headers, rows) {
 
 // ---- 账号页 ----------------------------------------------------------------
 ${accountBackupScript}
+${roleRotationScript}
 function accountChannel(source) {
   return { alipay: '支付宝', phone: '益世界 APP', douyin: '抖音小游戏', 'douyin-mitm': '抖音小游戏', mitm: '微信小游戏', wechat: '微信小游戏' }[source] || '已导入账号';
 }
 
+var accountSwitchPending = null;
 async function useAccountCard(id) {
+  if (accountSwitchPending) return false;
   const version = ++accountSelectionVersion;
   if (id === current) return true;
   if (!await configMayChangeAccount(id) || version !== accountSelectionVersion) return false;
-  await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id }) });
-  if (version !== accountSelectionVersion) return false;
-  selectLoadedAccount(id);
-  renderAccounts();
-  return true;
+  const account = accounts.find(row => row.id === id);
+  const connect = Boolean(account?.roleId && !account.status?.paused);
+  accountSwitchPending = connect ? id : null;
+  if (connect) stateActions.setFlag('connecting', id, true);
+  if (connect) $('account-worlds-notice').textContent = '正在切换到 ' + account.title + '…';
+  renderAccountSelect();
+  try {
+    const data = await call('/api/accounts/active', { method: 'POST', body: JSON.stringify({ confirm: true, id, ...(account?.roleId ? { connect } : {}) }) });
+    if (version !== accountSelectionVersion) return false;
+    if (data.status) setAccountStatus(id, data.status);
+    selectLoadedAccount(id);
+    await loadAccounts(false);
+    if (connect) $('account-worlds-notice').textContent = '已切换到 ' + (data.account?.title || account.title);
+    renderAccounts();
+    return true;
+  } catch (error) {
+    if (connect) $('account-worlds-notice').textContent = '切换失败：' + error.message;
+    throw error;
+  } finally {
+    if (accountSwitchPending === id) accountSwitchPending = null;
+    if (connect) stateActions.setFlag('connecting', id, false);
+    renderAccountSelect();
+    void refreshAccountStatuses();
+  }
 }
 
 async function toggleAccountCardLoop(id) {
@@ -1739,7 +1774,7 @@ function createAccountCard(id) {
   const card = component('ui-account-card');
   card.accountId = id;
   const action = name => card.querySelector('[data-account-action="' + name + '"]');
-  action('select').onclick = () => useAccountCard(id);
+  action('select').onclick = () => useAccountCard(id).catch(reportError);
   action('loop').onclick = () => toggleAccountCardLoop(id);
   action('login-settings').onclick = () => {
     if (accounts.some(account => account.id === id)) stateActions.setView({ loginSettingsAccountId: id });
@@ -1782,7 +1817,9 @@ function createAccountCard(id) {
 
 function renderAccounts() {
   $('export-accounts').disabled = !accounts.length;
-  $('account-count').textContent = accounts.length + ' 个账号';
+  const loginCount = new Set(accounts.map(account => account.loginAccountId || account.id)).size;
+  $('account-count').textContent = accounts.some(account => account.roleId)
+    ? loginCount + ' 个登录账号 · ' + accounts.length + ' 个区服角色' : accounts.length + ' 个账号';
   const box = $('accounts');
   if (!accounts.length) {
     if (!box.querySelector('.account-empty')) {
@@ -1802,11 +1839,12 @@ function renderAccounts() {
     const status = account.id === current ? snapshot : account.status ?? {};
     const seen = account.lastSeen;
     const fields = {
-      title: account.label || seen?.nickname || account.title,
+      title: account.roleId ? account.title : account.label || seen?.nickname || account.title,
       channel: accountChannel(account.source),
       status: connectingAccounts.has(account.id) ? '连接中…' : connectionStatus(status),
       role: seen?.nickname || '待连接读取',
-      world: seen?.worldName || '待连接读取',
+      world: (account.bornWorldName && account.bornWorldId !== seen?.worldId
+        ? account.bornWorldName + ' → ' + (seen?.worldName || '合服后区服') : seen?.worldName) || '待连接读取',
       level: seen?.level == null ? '—' : String(seen.level),
       power: seen?.power == null ? '—' : fmt(seen.power),
       seen: seen?.at ? '更新于 ' + when(seen.at) : '连接后更新角色资料',
@@ -1822,8 +1860,9 @@ function renderAccounts() {
     badge.classList.remove('done', 'waiting', 'blocked');
     badge.classList.add(connectionStatusKind(status, connectingAccounts.has(account.id)));
     const select = card.querySelector('[data-account-action="select"]');
-    select.disabled = account.id === current;
-    select.textContent = account.id === current ? '当前账号' : '切换账号';
+    select.disabled = account.id === current || Boolean(accountSwitchPending);
+    select.textContent = accountSwitchPending === account.id ? '切换中…' : account.id === current
+      ? account.roleId ? '当前区服' : '当前账号' : account.roleId ? '切换区服' : '切换账号';
     const loop = card.querySelector('[data-account-action="loop"]');
     const running = status.looping || status.reconnecting;
     loop.disabled = hostingActions.has(account.id) || !!status.loopStopping || (!running && account.id === current && loopAccount !== current);
@@ -1850,6 +1889,8 @@ async function renderWorlds() {
   const owner=current;
   const data = await call('/api/worlds');
   if(owner!==current)return;
+  await loadAccounts(false);
+  if(owner!==current)return;
   const box = clear($('worlds'));
   for (const world of data.recentWorlds) {
     const role = world.role || {};
@@ -1869,21 +1910,55 @@ async function renderWorlds() {
 }
 
 async function enterWorld(worldId) {
+  if (accountSwitchPending) return;
   const owner=current;
+  const account = accounts.find(row => row.id === owner);
+  const target = accounts.find(row => row.loginAccountId === account?.loginAccountId && row.bornWorldId === worldId);
+  if (!await configMayChangeAccount(target?.id || owner + ':world:' + worldId) || owner !== current) return;
+  accountSwitchPending = owner;
+  $('enter-world').disabled = true;
+  $('load-worlds').disabled = true;
   $('worlds-hint').textContent = '进入 ' + worldId + ' ...';
   try {
     const data = await call('/api/worlds/enter', { method: 'POST', body: JSON.stringify({ confirm: true, worldId, fromWorldId: 0 }) });
     if(owner!==current)return;
     const role = data.player || {};
-    $('worlds-hint').textContent = '已在 ' + (role.worldName ? role.worldName + '（' + worldId + '）' : worldId) + '：' + (role.nickname || '') + ' lv' + (role.level ?? '') + ' 战力' + fmt(role.power);
     await loadAccounts(false);
+    if (data.activeId && accounts.some(account => account.id === data.activeId)) selectLoadedAccount(data.activeId);
+    $('worlds-hint').textContent = '已在 ' + (role.worldName || role.worldId || worldId) + '：' + (role.nickname || '') + ' lv' + (role.level ?? '') + ' 战力' + fmt(role.power);
     renderAccounts();
     refreshOverview();
   } catch (error) {
     $('worlds-hint').textContent = '';
     reportError(error);
+  } finally {
+    accountSwitchPending = null;
+    $('enter-world').disabled = false;
+    $('load-worlds').disabled = false;
+    renderAccountSelect();
   }
 }
+
+var accountWorldsPending = false;
+$('refresh-account-worlds').onclick = async () => {
+  if (accountWorldsPending) return;
+  accountWorldsPending = true;
+  $('refresh-account-worlds').disabled = true;
+  $('account-worlds-notice').textContent = '正在读取各账号已有的区服角色…';
+  const loginAccounts = [...new Map(accounts.map(account => [account.loginAccountId || account.id, account])).values()];
+  try {
+    const results = await Promise.allSettled(loginAccounts.map(account => call('/api/worlds?account=' + encodeURIComponent(account.id))));
+    await loadAccounts(false);
+    const failures = results.filter(result => result.status === 'rejected');
+    $('account-worlds-notice').textContent = failures.length
+      ? '区服列表已更新，' + failures.length + ' 个账号读取失败，可再次刷新重试。' : '已有区服角色已分别展示。';
+  } catch (error) {
+    reportError(error);
+  } finally {
+    accountWorldsPending = false;
+    $('refresh-account-worlds').disabled = false;
+  }
+};
 
 $('load-worlds').onclick = async () => {
   $('worlds-hint').textContent = '加载中 ...';
@@ -2140,6 +2215,7 @@ ${worldMapScript}
 ${siliconOverviewScript}
 ${resourceFieldsScript}
 ${inventoryScript}
+${resultsScript}
 ${productionPlanningScript}
 ${settingsScript}
 ${appointmentsScript}
@@ -2177,6 +2253,7 @@ function activateConsolePage(button, resource = selectedResource) {
     if (target === 'lineups') void refreshSavedLineups();
     if (button.dataset.tab === 'account') {
       renderAccounts();
+      void refreshRoleRotations();
       pollCapture();
     }
     if (button.dataset.tab === 'manual') refreshManualWorld();

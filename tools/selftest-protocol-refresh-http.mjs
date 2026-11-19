@@ -48,16 +48,17 @@ const { getProtocolSource } = await import('../src/proto.mjs');
 const connected = new Set();
 let connects = 0;
 Object.defineProperty(GameClient.prototype, 'connected', { get() { return connected.has(this); } });
-GameClient.prototype.connect = async function () {
+GameClient.prototype.connect = async function (login) {
   connects++; connected.add(this); this.state = 'CONNECTED';
-  return { playerInfo: { playerId: 910000 + connects, worldId: 9001, level: 1 } };
+  const playerId = { old: 910001, new: 910002, broken: 910003 }[login.eworldParams.openId];
+  return { playerInfo: { playerId, worldId: 9001, level: 1 } };
 };
 GameClient.prototype.send = () => 1;
 GameClient.prototype.request = async () => ({});
 GameClient.prototype.sendWatch = async () => ({});
 GameClient.prototype.stop = function () { connected.delete(this); this.stopping = true; this.state = 'IDLE'; };
 saveStore({ activeId: 'old', accounts: ['old', 'new', 'broken'].map(id => ({
-  id, url: 'ws://invalid.invalid', login: {}, automation: { enabled: false, autoStart: false },
+  id, url: 'ws://invalid.invalid', login: { worldId: 9001, eworldParams: { openId: id } }, automation: { enabled: false, autoStart: false },
 })) });
 
 const app = createConsole({ port: 0 });

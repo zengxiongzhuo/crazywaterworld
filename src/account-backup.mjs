@@ -1,6 +1,6 @@
 import fs from 'node:fs';
 import { createHash } from 'node:crypto';
-import { ACCOUNTS_PATH, accountFromCredential, loadStore } from './accounts.mjs';
+import { ACCOUNTS_PATH, accountFromCredential, loadStore, loginAccountId, roleEntryId, serializeStore, normalizeStore, findRoleAccount } from './accounts.mjs';
 import { accountKey } from './usage-ledger.mjs';
 import { atomicJson, readJson, withFileLock } from './json-store.mjs';
 import { exportAutomationSettings, importAutomationSettings, loadAutomationSettings,
@@ -14,7 +14,7 @@ const plain = value => value !== null && typeof value === 'object' && !Array.isA
 // flags remain local, even when the user includes game settings.
 function portableAccount(account) {
   return structuredClone(Object.fromEntries(['id', 'label', 'url', 'login', 'loginFrameHex',
-    'source', 'capturedAt', 'addedAt', 'lastSeen'].map(key => [key, account[key] ?? null])));
+    'source', 'capturedAt', 'addedAt', 'lastSeen', 'loginAccountId', 'roleId', 'bornWorldId'].map(key => [key, account[key] ?? null])));
 }
 
 function savedSettings(account) {
@@ -48,13 +48,17 @@ export function exportAccountBackup(store, { id, ids, all = false, includeSettin
 }
 
 export function parseAccountBackup(document) {
+  if (document?.version === 2 && !document.format && document.loginAccounts) {
+    const store = normalizeStore(document);
+    document = { version: 1, activeId: store.activeId, accounts: store.accounts };
+  }
   const modern = document?.format === ACCOUNT_BACKUP_FORMAT;
   if (!plain(document) || document.version !== 1 || document.format && !modern
     || !Array.isArray(document.accounts) || !document.accounts.length
     || modern && typeof document.includeSettings !== 'boolean') {
     throw new Error('请选择本工具导出的账号 JSON 文件（版本 1）');
   }
-  const ids = new Set();
+  const ids = new Set(), roles = new Set();
   const accounts = document.accounts.map((row, index) => {
     const fail = message => { throw new Error(`第 ${index + 1} 个账号：${message}`); };
     if (!plain(row) || !plain(row.login) || !plain(row.login.eworldParams)
@@ -66,10 +70,24 @@ export function parseAccountBackup(document) {
     if (row.label != null && typeof row.label !== 'string') fail('账号备注必须是文本');
     if (row.loginFrameHex != null && (typeof row.loginFrameHex !== 'string' || !/^(?:[0-9a-f]{2})+$/i.test(row.loginFrameHex))) fail('登录帧必须是完整的十六进制字节');
     const account = accountFromCredential(row, { label: row.label ?? null });
+    const loginId = account.id;
+    if (row.loginAccountId != null && row.loginAccountId !== loginId) fail('登录账号标识与凭据不一致');
+    if (row.roleId != null && (typeof row.roleId !== 'string' || !/^[1-9]\d*$/.test(row.roleId))) fail('角色标识无效');
+    if (row.bornWorldId != null && (!Number.isSafeInteger(row.bornWorldId) || row.bornWorldId <= 0
+      || Number(row.login.worldId) !== row.bornWorldId)) fail('原区服与登录入口不一致');
+    account.roleId = row.roleId ?? null;
+    account.bornWorldId = row.bornWorldId ?? account.bornWorldId;
+    const allowedIds = [loginId, roleEntryId(loginId, account), roleEntryId(loginId, { bornWorldId: account.bornWorldId })];
+    if (!allowedIds.includes(row.id)) fail('账号标识与登录凭据或渠道不一致');
+    account.id = row.id;
+    if (account.roleId) {
+      const identity = loginId + ':' + account.roleId;
+      if (roles.has(identity)) fail('文件中包含重复区服角色');
+      roles.add(identity);
+    }
     // 备份只恢复账号资料；启停偏好保留本机值，新增账号在导入计划中默认关闭。
     delete account.automation;
     accountKey(account.id);
-    if (row.id !== account.id) fail('账号标识与登录凭据或渠道不一致');
     if (ids.has(account.id)) fail('文件中包含重复账号');
     ids.add(account.id);
     for (const key of ['addedAt', 'capturedAt']) {
@@ -78,7 +96,7 @@ export function parseAccountBackup(document) {
     }
     if (row.lastSeen != null) {
       if (!plain(row.lastSeen)) fail('角色资料无效');
-      account.lastSeen = Object.fromEntries(['nickname', 'level', 'power', 'worldId', 'at'].map(key => {
+      account.lastSeen = Object.fromEntries(['id', 'nickname', 'level', 'power', 'worldId', 'bornWorldId', 'at'].map(key => {
         const value = row.lastSeen[key] ?? null;
         if (value !== null && typeof value !== 'string' && typeof value !== 'number') fail('角色资料字段无效');
         return [key, value];
@@ -102,8 +120,17 @@ function importPlan(document) {
   const store = loadStore();
   const next = structuredClone(store);
   let created = 0, updated = 0;
-  const settingsEntries = [], baseline = [];
+  const settingsEntries = [], baseline = [], importedIds = new Map();
   for (const { account, settings } of backup.accounts) {
+    const originalId = account.id;
+    const matching = findRoleAccount(next, account, account.roleId ? { id: account.roleId } : null);
+    const collision = next.accounts.find(row => row.id === account.id);
+    if (matching) account.id = matching.id;
+    else if (collision && (account.roleId && collision.roleId && account.roleId !== collision.roleId
+      || account.bornWorldId && collision.bornWorldId && account.bornWorldId !== collision.bornWorldId)) {
+      account.id = roleEntryId(loginAccountId(account), account);
+    }
+    importedIds.set(originalId, account.id);
     const index = next.accounts.findIndex(row => row.id === account.id);
     baseline.push(index < 0 ? null : next.accounts[index]);
     if (index < 0) {
@@ -115,14 +142,22 @@ function importPlan(document) {
         addedAt: previous.addedAt ?? account.addedAt, lastSeen: previous.lastSeen ?? account.lastSeen };
       updated++;
     }
+    for (const sibling of next.accounts) {
+      if (loginAccountId(sibling) !== loginAccountId(account) || sibling.id === account.id) continue;
+      sibling.url = account.url;
+      sibling.login = { ...account.login, worldId: sibling.bornWorldId || sibling.login.worldId || 0 };
+      sibling.source = account.source;
+      sibling.loginFrameHex = account.loginFrameHex;
+      sibling.capturedAt = account.capturedAt;
+    }
     if (settings) {
       const entry = loadAutomationSettings(account.id);
       settingsEntries.push({ id: account.id, settings, revision: entry.revision });
       baseline.push(entry);
     }
   }
-  if (!store.activeId) next.activeId = backup.activeId;
-  const token = createHash('sha256').update(JSON.stringify([document, store.activeId, baseline])).digest('hex');
+  if (!store.activeId) next.activeId = importedIds.get(backup.activeId) || backup.activeId;
+  const token = createHash('sha256').update(JSON.stringify([document, store, baseline])).digest('hex');
   return { next, settingsEntries, summary: { created, updated, settingsCount: settingsEntries.length, token } };
 }
 
@@ -138,7 +173,7 @@ export function importAccountBackup(document, token) {
     try {
       for (const entry of plan.settingsEntries) saved.push({ id: entry.id,
         ...saveAutomationSettings(entry.id, entry.settings, { revision: entry.revision }) });
-      atomicJson(ACCOUNTS_PATH, plan.next);
+      atomicJson(ACCOUNTS_PATH, serializeStore(plan.next));
     } catch (error) {
       if (saved.length) {
         if (previousSettings === null) fs.unlinkSync(settingsFile());

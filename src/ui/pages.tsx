@@ -17,6 +17,36 @@ function Option({id, label, checked = false}: {id: string; label: string; checke
   return <div className="bar"><Switch id={id} data-local-switch="" defaultChecked={checked} className="p-0" /><label htmlFor={id}>{label}</label></div>
 }
 
+export function resultsPage() {
+  return renderToStaticMarkup(<div className="results-page grid gap-3">
+    <Panel title="挂机成果" titleAfter={<Button id="results-refresh" variant="outline" size="sm">刷新成果</Button>}>
+      <p className="dim">查看挂机完成的事情、实际收获和消耗。区服轮换持续累计，今日成果按北京时间零点划分。</p>
+      <div className="results-toolbar">
+        <div className="results-period" role="group" aria-label="统计时间范围"><Button id="results-current" variant="outline" aria-pressed="true">本次挂机</Button><Button id="results-today" variant="outline" aria-pressed="false">今日累计</Button></div>
+        <label htmlFor="results-scope">查看范围<select id="results-scope"><option value="role">当前区服</option><option value="login">同账号全部区服</option></select></label>
+        <span id="results-status" className="dim" role="status">选择区服后查看成果</span>
+      </div>
+      <p id="results-run" className="results-run" />
+      <div id="results-metrics" className="results-metrics" aria-label="挂机概览" />
+      <p id="results-empty" className="results-empty" hidden>尚无挂机成果，开始挂机后会自动记录。</p>
+    </Panel>
+    <div className="results-columns">
+      <Panel title="收获了什么"><div id="results-gains" className="results-assets" /></Panel>
+      <Panel title="消耗了什么"><div id="results-costs" className="results-assets" /></Panel>
+    </div>
+    <div className="results-columns">
+      <Panel title="做了哪些事情"><div id="results-actions" className="results-actions" /></Panel>
+      <Panel title="各区服成果"><div id="results-roles" className="results-roles" /></Panel>
+    </div>
+    <Panel title="成果明细">
+      <div id="results-events" className="results-events" />
+      <div className="bar results-pagination"><Button id="results-previous" variant="outline" size="sm">上一页</Button><span id="results-page-number" className="dim" /><Button id="results-next" variant="outline" size="sm">下一页</Button></div>
+      <details className="results-pending"><summary id="results-pending-label">待确认的操作</summary><div id="results-pending-list" /></details>
+      <p className="dim results-note" id="results-note">奖励以服务器确认结果为准，待确认的操作单独展示。收获与消耗分别累计。</p>
+    </Panel>
+  </div>);
+}
+
 export function giftCodesPage() {
   return renderToStaticMarkup(<div className="grid gap-3">
     <Panel title="礼包兑换" help="每个账号独立排队，兑换请求逐个发送。账号登录失败或结果未知只停止该账号；任一账号遇到服务器限频时，同批尚未发送的账号全部停止，之后可重新提交。"><label htmlFor="gift-code-input">礼包码（换行或逗号分隔）</label>
@@ -170,15 +200,33 @@ export function accountPage() {
     <div className="account-page-heading">
       <div className="account-page-title"><h2 className="text-xl font-semibold">账号</h2><span id="account-count" className="dim" aria-live="polite">正在读取</span></div>
       <div className="account-page-actions">
+        <Button id="refresh-account-worlds" type="button" variant="outline">刷新区服</Button>
         <Button id="import-accounts" type="button" variant="outline">导入账号</Button>
         <input id="import-accounts-file" type="file" accept=".json,application/json" aria-label="选择账号备份文件" hidden />
         <Button id="export-accounts" type="button" variant="outline" aria-haspopup="dialog" aria-controls="account-export-dialog">导出账号</Button>
         <Button id="account-add" type="button" aria-haspopup="dialog" aria-controls="account-add-dialog"><Plus aria-hidden="true" />添加账号</Button>
       </div>
     </div>
-    <p className="dim">新账号默认不挂机，点击「开始挂机」后才会持续运行；每个账号可通过「登录设置」单独配置自动重连策略。</p>
+    <p className="dim">每个区服角色分别展示。同一登录账号只能有一个区服在线，切换或开始其他区服挂机时，会结束旧区服的任务和连接。新角色默认不挂机，可通过卡片上的「登录设置」单独配置自动重连策略。</p>
+    <p id="account-worlds-notice" className="dim" role="status" aria-live="polite" />
     <p id="account-add-notice" className="dim" role="status" hidden />
     <p id="account-transfer-notice" className="dim" role="status" aria-live="polite" hidden />
+    <Panel title="区服轮换挂机" help="按顺序登录同一账号的区服，使用各角色已保存的挂机配置；到时停止并交接。每日时段按北京时间计算，支持跨午夜。">
+      <form id="role-rotation-form" className="rotation-form" noValidate>
+        <div className="rotation-heading"><label htmlFor="rotation-login">登录账号<select id="rotation-login" aria-label="轮换登录账号" /></label><p id="rotation-status" className="dim" role="status" aria-live="polite">正在读取轮换配置…</p></div>
+        <fieldset id="rotation-fields" className="rotation-fields" disabled>
+          <div className="bar"><label className="rotation-check"><input id="rotation-enabled" type="checkbox" />启用每日轮换</label><label className="rotation-check"><input id="rotation-all-day" type="checkbox" />全天运行</label></div>
+          <div className="rotation-times"><label htmlFor="rotation-start">开始时间<Input id="rotation-start" type="time" defaultValue="23:00" /></label><label htmlFor="rotation-end">结束时间<Input id="rotation-end" type="time" defaultValue="06:00" /></label><p className="dim">北京时间；23:00–06:00 表示每天晚上 11 点到次日早上 6 点。</p></div>
+          <label className="rotation-check"><input id="rotation-reconnect-enabled" type="checkbox" defaultChecked />意外断线自动重连</label>
+          <div className="rotation-times"><label htmlFor="rotation-reconnect-retries">重试次数<Input id="rotation-reconnect-retries" type="number" min="1" max="1000" step="1" defaultValue="3" /></label><label htmlFor="rotation-reconnect-interval">重试间隔（秒）<Input id="rotation-reconnect-interval" type="number" min="1" max="86400" step="1" defaultValue="10" /></label><p className="dim">网络波动或心跳超时时重试当前区服，保留原交接时间；次数用完后尝试下一区服。主动暂停、切区和时段结束不会触发重连。</p></div>
+          <p className="dim">勾选参与区服，按下面的顺序循环。挂机时长从登录完成后开始计算，时段结束时提前停止。</p>
+          <div id="rotation-roles" className="rotation-roles" role="group" aria-label="参与轮换的区服与挂机时长" />
+          <div className="bar"><Button id="rotation-save" type="submit">保存轮换配置</Button><Button id="rotation-pause" type="button" variant="outline" hidden>暂停轮换</Button><Button id="rotation-reload" type="button" variant="outline">载入最新配置</Button></div>
+        </fieldset>
+        <p id="rotation-notice" className="dim" role="status" aria-live="polite" />
+        <p className="dim">手动切区、开始或停止挂机、暂停托管会暂停本账号的轮换，可点击「继续轮换」恢复。关闭网页后后台继续运行，请保持控制台启动窗口和电脑运行。</p>
+      </form>
+    </Panel>
     <div id="accounts" className="account-grid" />
 
     <dialog id="account-login-dialog" aria-labelledby="account-login-title">
@@ -210,7 +258,7 @@ export function accountPage() {
       <div id="account-details">
         <h4>角色概况</h4><div className="who" id="who">等待连接</div>
         <h4>资源</h4><div className="resource-strip" id="res">连接后显示</div>
-        <h4>区服</h4>
+        <h4>该登录账号的区服角色</h4>
         <div className="bar"><Button id="load-worlds" variant="outline">加载区服</Button><Input id="world-input" aria-label="区服 ID" placeholder="区服 ID" className="w-32" /><Button id="enter-world" variant="outline">进入该区服</Button><span id="worlds-hint" className="warn" /></div>
         <div id="worlds" />
       </div>

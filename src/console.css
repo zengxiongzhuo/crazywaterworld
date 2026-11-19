@@ -204,6 +204,28 @@ label[for=gift-code-input] { display:block; margin-bottom:8px }
 .account-page-title h2 { margin:0 }
 .account-page-actions { margin-inline-start:auto; flex-wrap:wrap; justify-content:flex-end }
 .account-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(min(100%,340px),1fr)); align-items:start; gap:16px }
+.rotation-form,.rotation-fields,.rotation-roles { display:grid; gap:16px; min-width:0 }
+.rotation-fields { border:0; margin:0; padding:0 }
+.rotation-heading { display:flex; flex-wrap:wrap; align-items:center; gap:16px; justify-content:space-between }
+.rotation-heading>label,.rotation-times>label { display:grid; gap:6px; min-width:0 }
+.rotation-heading select { max-width:100%; min-width:200px }
+.rotation-check,.rotation-role-title { display:flex; align-items:center; gap:8px }
+.rotation-check input,.rotation-role-title input { flex-shrink:0 }
+.rotation-times { display:grid; grid-template-columns:repeat(2,minmax(0,150px)) minmax(0,1fr); gap:16px; align-items:end }
+.rotation-times input { width:100%; min-width:0; max-width:100%; box-sizing:border-box }
+.rotation-role { display:grid; grid-template-columns:minmax(0,1fr) auto auto; gap:12px; align-items:center; padding:12px }
+.rotation-role-title { min-width:0; overflow-wrap:anywhere }
+.rotation-duration,.rotation-order { display:flex; align-items:center; gap:8px }
+.rotation-duration input { width:88px }
+.rotation-order button { padding:6px 8px; font-size:12px }
+@media(max-width:600px) {
+  .rotation-times { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .rotation-times>p { grid-column:1 / -1 }
+  .rotation-role { grid-template-columns:1fr auto }
+  .rotation-role-title { grid-column:1 / -1 }
+  .rotation-heading>label { width:100% }
+  .rotation-heading select { min-width:0; width:100% }
+}
 .account-card { min-width:0 }
 .account-card-heading { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:4px }
 .account-card-badges { display:flex; align-items:center; flex-wrap:wrap; gap:6px }

@@ -7,7 +7,8 @@ function accountPickerPresentation(account, activeStatus) {
   const detail = account.id === current && activeStatus ? activeStatus
     : connecting ? '连接中…' : connectionStatus(status);
   let label = detail;
-  if (status.syncingProduction) label = '同步中';
+  if (status.switching) label = '切换中';
+  else if (status.syncingProduction) label = '同步中';
   else if (status.paused) label = '已暂停';
   else if (detail === '连接中…') label = '连接中';
   else if (status.reconnecting) label = '重连中';
@@ -29,7 +30,7 @@ function renderAccountPicker(activeStatus) {
   const selected = accounts.find(account => account.id === current);
   const title = $('account-picker-title');
   const tag = $('account-picker-status');
-  trigger.disabled = !accounts.length;
+  trigger.disabled = !accounts.length || (typeof accountSwitchPending !== 'undefined' && Boolean(accountSwitchPending));
   title.textContent = selected?.title || (accounts.length ? '选择账号' : '没有账号');
   tag.hidden = !selected;
   if (selected) {
@@ -96,6 +97,7 @@ function closeAccountPicker(restoreFocus = false) {
 }
 
 async function chooseAccountPicker(id) {
+  if (typeof accountSwitchPending !== 'undefined' && accountSwitchPending) return;
   closeAccountPicker(true);
   accountSelectionVersion++;
   const source = $('account');

@@ -142,10 +142,22 @@ const request = async (route, account = 'a', body) => {
   const res = await fetch(base + '/api/' + route + (route.includes('?') ? '&' : '?') + 'account=' + account, { method: body ? 'POST' : 'GET', body: body ? JSON.stringify(body) : undefined });
   return { status: res.status, data: await res.json() };
 };
-const streamText = async (account, headers) => {
-  const response = await fetch(base + '/api/events?account=' + account, { headers });
+const readStreamUntil = async (reader, matches) => {
+  const decoder = new TextDecoder();
+  let text = '', complete = '';
+  while (!matches(complete)) {
+    const chunk = await reader.read();
+    assert.equal(chunk.done, false, '事件流不能在目标事件到达前结束');
+    text += decoder.decode(chunk.value, { stream: true });
+    const end = text.lastIndexOf('\n\n');
+    if (end >= 0) complete = text.slice(0, end + 2);
+  }
+  return complete;
+};
+const streamText = async (account, headers, matches = text => text.includes('\n\n')) => {
+  const response = await fetch(base + '/api/events?account=' + account, { headers, signal: AbortSignal.timeout(5000) });
   const reader = response.body.getReader();
-  try { return new TextDecoder().decode((await reader.read()).value); } finally { await reader.cancel(); }
+  try { return await readStreamUntil(reader, matches); } finally { await reader.cancel(); }
 };
 try {
   for (const id of ['a', 'b']) { await request('settings', id); const f = commentsFixture(), session = app.sessions.get(id); session.client = f.client; session.player = f.player; session.paused = false; session.fixture = f; }
@@ -162,16 +174,17 @@ try {
     const clear = await request('logs/clear', 'a', { confirm: true }); assert.equal(clear.status, 200);
     assert.equal(a.log.length, 0); assert(b.log.some(row => row.message === 'B旧日志'));
     app.emit(a, 'info', 'A新日志');
-    const aText = await streamText('a'), bText = await streamText('b');
+    const aText = await streamText('a', undefined, text => text.includes('A新日志'));
+    const bText = await streamText('b', undefined, text => text.includes('B旧日志') && text.includes('共享旧日志'));
     assert.match(aText, /A新日志/); assert.doesNotMatch(aText, /A旧日志|共享旧日志/);
     assert.match(bText, /B旧日志/); assert.match(bText, /共享旧日志/); assert.doesNotMatch(bText, /A新日志/);
   });
   await check('清空事件通知同账号窗口，读取中暂停取消排队写入', async () => {
-    const stream = await fetch(base + '/api/events?account=a'), reader = stream.body.getReader();
+    const stream = await fetch(base + '/api/events?account=a', { signal: AbortSignal.timeout(5000) }), reader = stream.body.getReader();
     try {
       await reader.read();
       await request('logs/clear', 'a', { confirm: true });
-      const event = new TextDecoder().decode((await reader.read()).value);
+      const event = await readStreamUntil(reader, text => text.includes('event: logs-cleared'));
       assert.match(event, /event: logs-cleared/);
     } finally { await reader.cancel(); }
     const b = app.sessions.get('b'), token = option((await request('dailies', 'b')).data, 1004).token;
@@ -189,7 +202,7 @@ try {
     const old = app.emit(a, 'info', '断线窗口曾显示的旧记录');
     const cleared = (await request('logs/clear', 'a', { confirm: true })).data;
     const fresh = app.emit(a, 'info', '清空之后保留的新记录');
-    const text = await streamText('a', { 'Last-Event-ID': String(old.id) });
+    const text = await streamText('a', { 'Last-Event-ID': String(old.id) }, value => value.includes('清空之后保留的新记录'));
     const events = text.trim().split('\n\n').map(block => ({
       type: block.startsWith('event: logs-cleared') ? 'clear' : 'log',
       value: JSON.parse(block.split('\n').find(line => line.startsWith('data: ')).slice(6)),

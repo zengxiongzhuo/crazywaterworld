@@ -12,6 +12,8 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
 const { createConsole } = await import('../src/server.mjs');
+const { createDeclaredProtocol } = await import('./fixtures/declared-protocol.mjs');
+const protocol = createDeclaredProtocol(['OnWaterRequest', 'OnWaterResponse', 'AllItemRequest', 'AllItemResponse', 'AllResourceRequest', 'AllResourceResponse']);
 const { automationTasks } = await import('../src/automation.mjs');
 const { createUsageLedger } = await import('../src/automation-settings.mjs');
 
@@ -93,7 +95,7 @@ async function fixture(options = {}) {
   store.activeId = id;
   saveStore(store);
   const delays = [];
-  const app = createConsole({ port: 0, recoveryDelayMs(attempt) { delays.push(attempt); return options.delay ?? 25; } });
+  const app = createConsole({ port: 0, protocol, recoveryDelayMs(attempt) { delays.push(attempt); return options.delay ?? 25; } });
   apps.add(app);
   const root = await app.listen();
   const response = async (route, body = null) => {
@@ -112,12 +114,19 @@ async function fixture(options = {}) {
   const session = () => app.sessions.get(id);
   const automation = () => loadStore().accounts.find(account => account.id === id)?.automation;
   const start = async (rounds = 0, everySeconds = 1) => api('loop/start', { rounds, everySeconds });
-  const close = async () => {
+  const close = async ({ preserveAccount = false } = {}) => {
     state.mailGate?.resolve();
     const job = session()?.loop.job;
     await app.close();
     await job;
     apps.delete(app);
+    if (!preserveAccount) {
+      const store = loadStore();
+      store.accounts = store.accounts.filter(account => account.id !== id);
+      if (store.activeId === id) store.activeId = null;
+      saveStore(store);
+      states.delete(id);
+    }
   };
   const stop = async () => {
     const job = session()?.loop.job;
@@ -237,7 +246,7 @@ try {
   });
 
   await test('等待恢复时手动停止立即取消重连并清除持续运行开关', async () => {
-    const f = await fixture({ delay: 180 });
+    const f = await fixture({ delay: 1500 });
     try {
       await f.start();
       await waitFor(() => f.session().loop.completed === 1, '停止前首轮');
@@ -245,6 +254,7 @@ try {
       await waitFor(() => f.session().loop.recovery, '进入重连等待');
       const view = await f.api('loop');
       assert(view.recovery.nextAttemptAt > 0);
+      assert.equal(f.state.logins, 1, '停止请求之前仍在等待恢复');
       await f.stop();
       await sleep(220);
       assert.equal(f.state.logins, 1);
@@ -270,7 +280,7 @@ try {
 
   await test('暂停托管或主动断开可取消恢复，不自动与用户抢连接', async () => {
     for (const route of ['accounts/pause', 'disconnect']) {
-      const f = await fixture({ delay: 180 });
+      const f = await fixture({ delay: 1500 });
       try {
         await f.start();
         await waitFor(() => f.session().loop.completed === 1, route + '首轮');
@@ -383,8 +393,8 @@ try {
       drop(f.session().client, 'kicked');
       await f.api('disconnect', {});
       assert.equal((await f.response('overview')).status, 400);
-      await f.close();
-      restarted = createConsole({ port: 0 }); apps.add(restarted);
+      await f.close({ preserveAccount: true });
+      restarted = createConsole({ port: 0, protocol }); apps.add(restarted);
       const root = await restarted.listen();
       const response = await fetch(root + '/api/overview?account=' + f.id, { signal: AbortSignal.timeout(5000) });
       assert.equal(response.status, 400);

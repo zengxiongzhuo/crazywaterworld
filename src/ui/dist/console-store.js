@@ -101,7 +101,14 @@ var CWConsoleState = (() => {
                 ...accountsById[row.id],
                 status: { ...row.status ?? {} },
                 ...Object.hasOwn(row, "lastSeen") ? { lastSeen: row.lastSeen } : {},
-                ...Object.hasOwn(row, "label") ? { label: row.label } : {}
+                ...Object.hasOwn(row, "label") ? { label: row.label } : {},
+                ...Object.hasOwn(row, "title") && row.roleId ? { title: row.title } : {},
+                ...Object.hasOwn(row, "roleId") ? {
+                  roleId: row.roleId,
+                  bornWorldId: row.bornWorldId,
+                  bornWorldName: row.bornWorldName,
+                  loginAccountId: row.loginAccountId
+                } : {}
               };
             }
             return { accountsById };

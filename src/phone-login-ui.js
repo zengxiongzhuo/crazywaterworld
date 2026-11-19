@@ -220,7 +220,7 @@ function renderPhonePending(data) {
       if (choice.roleWorldId && String(choice.roleWorldId) !== String(choice.worldId)) {
         info.appendChild(el('p', 'dim', '原区服 ' + (choice.worldName || choice.worldId) + '，合服后位于 ' + phoneRoleWorld(choice)));
       }
-      if (choice.matched) info.appendChild(el('p', 'dim', '已有记录 ' + (choice.existingTitle || choice.nickname) + '，保存会更新角色与区服。切换角色时会停止旧角色的任务和连接。'));
+      if (choice.matched) info.appendChild(el('p', 'dim', '已有记录 ' + (choice.existingTitle || choice.nickname) + '，保存会更新此区服的登录凭证。同一账号的其他区服分别保留，切换时结束旧区服的任务和连接。'));
       row.append(input, info);
       list.appendChild(row);
     }

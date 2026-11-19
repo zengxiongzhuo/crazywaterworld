@@ -63,28 +63,28 @@ try {
     };
     const reloadFrom = async (state, hash = '') => {
       await page.evaluate(({ state, hash }) => history.replaceState(state, '', location.pathname + location.search + hash), { state, hash });
-      await page.reload();
+      await page.reload({ waitUntil: 'domcontentloaded' });
     };
 
-    await page.goto(base);
+    await page.goto(base, { waitUntil: 'domcontentloaded' });
     await tab('overview');
     assert.equal(await page.locator('#tabs [data-tab="activities"]').getAttribute('aria-label'), '活动');
     assert.equal(await page.locator('#tabs [data-tab="resources"]').getAttribute('aria-label'), '杂项');
     assert.deepEqual(await page.locator('[data-resource-tab]').allTextContents(), ['联盟', '仓库', '英雄与装备', '礼包兑换']);
     await main('settings');
     await config('base', 'building');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await config('base', 'building');
 
     await cityWar();
     assert.equal(new URL(page.url()).hash, '#config-group-cityWar');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await config('world', 'cityWar');
     await page.locator('[data-config-tab="base"]').click();
     await page.locator('[data-config-family="production"]').click();
     await page.locator('[data-config-group="farm"]').click();
     await config('base', 'farm');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await config('base', 'farm');
 
     // 已载入的草稿返回配置时可能不重绘，仍须恢复当前分组的 URL。
@@ -95,10 +95,10 @@ try {
     await main('settings');
     await config('world', 'cityWar');
     assert.equal(new URL(page.url()).hash, '#config-group-cityWar');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await config('world', 'cityWar');
     await main('overview');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await tab('overview');
     assert.equal(new URL(page.url()).hash, '');
 
@@ -112,7 +112,7 @@ try {
     assert.equal(new URL(page.url()).hash, '#config-group-cityWar');
     await main('resources');
     await tab('resources', 'heroes');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await tab('resources', 'heroes');
 
     // 活动独立为顶级页面，返回杂项继续显示原子页。
@@ -122,7 +122,7 @@ try {
     await main('resources');
     await tab('resources', 'heroes');
     await main('activities');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await tab('activities');
     assert.equal(await page.locator('#resource-tabs').isVisible(), false);
 
@@ -157,13 +157,13 @@ try {
     await page.locator('#journal-dialog[open]').waitFor();
     await page.keyboard.press('Escape');
     await main('resources');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await tab('resources', 'guild');
     assert.equal(new URL(page.url()).hash, '');
     await reloadFrom(null, '#pirate-first-kill');
     await tab('stages');
     await main('overview');
-    await page.reload();
+    await page.reload({ waitUntil: 'domcontentloaded' });
     await tab('overview');
     assert.equal(new URL(page.url()).hash, '');
     await context.close();

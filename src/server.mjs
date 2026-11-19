@@ -64,7 +64,7 @@ import { getProtocol, getProtocolSource } from './proto.mjs';
 import { protocolSourceInfo } from './protocol-source.mjs';
 import { PAGE } from './page.mjs';
 import { iconThumb } from './art-thumbs.mjs';
-import { listWorlds, enterWorld, describeRole } from './worlds.mjs';
+import { listWorlds, describeRole } from './worlds.mjs';
 import { collectState, summarize, formatState, ENTRY_QUERIES } from './game.mjs';
 import { claimRewards } from './claim-rewards.mjs';
 import { fishView, newbieView } from './collections.mjs';
@@ -82,7 +82,7 @@ import { surveyTasks, runTasks, formatTaskPlan, selectTaskSettings } from './tas
 import { makeTypeResolver, weekFactoryInfo, surveyWorld, planWorld, runWorldRound, submitResidentOrder, rerollResidentOrder, watchResidentRefreshes, formatWorldPlan, formatFieldReport, loadMapAsset } from './world.mjs';
 import { runLoop, formatLoopRound, formatLoopStep } from './loop.mjs';
 import { describeLogError } from './log-errors.mjs';
-import { classifyLog } from './log-categories.mjs';
+import { classifyLog, LOG_CATEGORIES } from './log-categories.mjs';
 import { createLogAccountLabels } from './log-accounts.mjs';
 import { operationLabels } from './operation-labels.mjs';
 import { automationTasks, retiredAutomationTasks, migratedAutomationTasks, defaultFishingGoldReserve, defaultCompassSpinCount, maxCompassSpinCount, taskSettings, worldTaskKey, dailyTaskKey } from './automation.mjs';
@@ -108,8 +108,11 @@ import { captureManualProductionMaterialState } from './order-reservations.mjs';
 import { createStageTask } from './stages.mjs';
 import { createChallengeRun } from './challenge-automation.mjs';
 import { runAction } from './actions.mjs';
-import { accountId, loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, rememberSeen, DATA_DIR } from './accounts.mjs';
+import { accountId, loginAccountId, findRoleAccount, rememberWorlds, toCredential, loadStore, saveStore, upsertAccount, removeAccount, setActive, pickAccount, describeAccount, revealAccount, rememberSeen, DATA_DIR } from './accounts.mjs';
 import { ACCOUNT_BACKUP_MAX_BYTES, exportAccountBackup, previewAccountImport, importAccountBackup } from './account-backup.mjs';
+import { createRoleRotationManager, rotationWindow } from './role-rotation.mjs';
+import { createAutomationResults } from './automation-results.mjs';
+import { observeAutomationResults } from './automation-result-observer.mjs';
 import { startCapture, stopCapture, captureState, inspectCaptureRecovery, recoverCapture, DEFAULT_PROXY_PORT } from './capture.mjs';
 import { createPhoneLogin, loadDeviceProfile, saveDeviceProfile, DEVICE_PROFILE_PATH } from './phone-login.mjs';
 import { createAlipayLogin } from './alipay-login.mjs';
@@ -144,6 +147,7 @@ const STATE_TEXT = {
 };
 
 export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs, resourceUpdates = false, resourceUpdater = null, protocol: protocolOverride,
+  rotationNow = Date.now, rotationAutomatic = true,
   alipayLoginController = null,
   captureController = { startCapture, stopCapture, captureState, inspectCaptureRecovery, recoverCapture } } = {}) {
   const consoleVersion = createConsoleVersion(PAGE);
@@ -164,8 +168,38 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   const globalLog = [];
   const streams = new Set();
   const sessions = new Map();
+  const loginLocks = new Map();
+  const roleSwitches = new Map();
   let closing = false;
   let settingsWatchStarted = false;
+  const automationResults = createAutomationResults({ now: rotationNow, onError: error => resultsSafe(() => { throw error; }) });
+  let resultErrorAt = 0;
+  function resultsSafe(work) {
+    try { return work(); }
+    catch (error) { if (Date.now() - resultErrorAt > 60000) { resultErrorAt = Date.now(); emit(null, 'warn', '挂机成果记录暂时失败：' + error.message); } }
+  }
+  function resultsAccount(account) {
+    const row = describeAccount(account);
+    return { id: account.id, loginId: loginAccountId(account), label: row.title, world: row.bornWorldName || row.lastSeen?.worldName || '未知区服' };
+  }
+  const roleRotations = createRoleRotationManager({ accounts: () => loadStore().accounts, now: rotationNow, automatic: rotationAutomatic,
+    startRole: startRotationRole, stopLogin: stopRotationLogin,
+    isRunning: account => {
+      const session = sessions.get(account.id);
+      return Boolean(session?.loop.running && !session.loop.controller?.signal.aborted);
+    },
+    onChange: (loginId, entry) => {
+      if (entry.settings && (!entry.settings.enabled || entry.runtime.paused || entry.runtime.phase === 'waiting' && !rotationWindow(entry.settings, rotationNow()).active)) {
+        resultsSafe(() => automationResults.endLogin(loginId, entry.runtime.paused ? '区服轮换已暂停' : '区服轮换时段已结束'));
+      }
+      if (entry.runtime.phase === 'error') emit(null, 'warn', '区服轮换：' + entry.runtime.error, { roleRotation: loginId });
+      else if (entry.runtime.phase === 'retrying') {
+        const policy = roleRotations.entryFor(loginId).settings.reconnect;
+        emit(sessions.get(entry.runtime.currentId), 'warn', `区服轮换意外断线：${entry.runtime.error}；${Math.ceil(Math.max(0, entry.runtime.retryAt - rotationNow()) / 1000)} 秒后重连（第 ${(entry.runtime.reconnectAttempts ?? 0) + 1}/${policy.maxRetries} 次）`, { roleRotation: loginId });
+      }
+      else if (entry.runtime.phase === 'running') emit(sessions.get(entry.runtime.currentId), 'info', '区服轮换挂机已开始，到时自动交接下一角色', { roleRotation: loginId });
+    },
+  });
   const resources = resourceUpdater || (resourceUpdates ? createResourceUpdater({ onEvent: ({ level, message }) => emit(null, level, message) }) : null);
   // 先认证并查询已有区服角色，用户选择具体角色后再保存凭证。
   // 密码只用于当次请求；待保存凭证和待选账号只放在内存，十分钟后清理。
@@ -284,35 +318,37 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   async function readPhoneWorlds(credential, { signal } = {}) {
     if (closing) throw new Error('控制台已关闭');
     signal?.throwIfAborted();
-    const session = sessions.get(accountId(credential));
-    if (session?.connecting) await session.connecting.catch(() => {});
-    signal?.throwIfAborted();
-    const activeClient = session?.client;
-    if (activeClient?.connected && !session.paused) {
-      const generation = session.generation;
-      return readJob(session, () => {
-        signal?.throwIfAborted();
-        if (closing || session.client !== activeClient || !activeClient.connected || session.generation !== generation || session.paused) {
-          throw new Error('账号连接已变化，请重新读取角色列表');
-        }
-        return listWorlds(activeClient);
-      });
-    }
-    const client = new GameClient({ url: credential.url, protocol: currentProtocol() });
-    phonePreviewClients.add(client);
-    const stop = () => client.stop();
-    signal?.addEventListener('abort', stop, { once: true });
-    try {
-      // 只登录最近区服并查询列表，选择阶段不逐个进入其他区服。
-      await client.connect({ ...credential.login, worldId: 0 });
+    return withLoginLock(credential, async () => {
+      const session = liveLoginSession(credential);
+      if (session?.connecting && !session.client?.connected) throw new Error('账号正在连接，请稍后重新读取区服');
       signal?.throwIfAborted();
-      if (closing) throw new Error('控制台已关闭');
-      return await listWorlds(client);
-    } finally {
-      signal?.removeEventListener('abort', stop);
-      client.stop();
-      phonePreviewClients.delete(client);
-    }
+      const activeClient = session?.client;
+      if (activeClient?.connected && !session.paused) {
+        const generation = session.generation;
+        return readJob(session, () => {
+          signal?.throwIfAborted();
+          if (closing || session.client !== activeClient || !activeClient.connected || session.generation !== generation || session.paused) {
+            throw new Error('账号连接已变化，请重新读取角色列表');
+          }
+          return listWorlds(activeClient);
+        });
+      }
+      const client = new GameClient({ url: credential.url, protocol: currentProtocol() });
+      phonePreviewClients.add(client);
+      const stop = () => client.stop();
+      signal?.addEventListener('abort', stop, { once: true });
+      try {
+        // 只登录最近区服并查询列表，选择阶段不逐个进入其他区服。
+        await client.connect({ ...credential.login, worldId: 0 });
+        signal?.throwIfAborted();
+        if (closing) throw new Error('控制台已关闭');
+        return await listWorlds(client);
+      } finally {
+        signal?.removeEventListener('abort', stop);
+        client.stop();
+        phonePreviewClients.delete(client);
+      }
+    });
   }
 
   async function readPhoneRoles(entry, options) {
@@ -333,14 +369,16 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
 
   function roleChoices(entry, store) {
     const idOfAccount = accountId(entry.credential);
-    const existing = store.accounts.find(account => account.id === idOfAccount);
-    return entry.choices.map(choice => ({
+    return entry.choices.map(choice => {
+      const existing = findRoleAccount(store, { ...entry.credential, login: { ...entry.credential.login, worldId: choice.worldId } }, choice.role);
+      return ({
       id: choice.id, accountId: idOfAccount, userName: entry.userName,
       nickname: choice.role.nickname || '未命名角色', level: choice.role.level ?? null, power: choice.role.power ?? null,
       worldId: choice.worldId, worldName: choice.worldName,
       roleWorldId: choice.role.worldId || choice.worldId, roleWorldName: choice.role.worldName || choice.worldName,
       matched: Boolean(existing), existingTitle: existing ? describeAccount(existing).title : null,
-    }));
+      });
+    });
   }
 
   function phonePreview(pending) {
@@ -358,58 +396,69 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   async function saveSelectedRole(entry, choice, { sourceLabel = 'APP 登录', stopExisting = false, validateSelection = () => {} } = {}) {
-    const idOfAccount = accountId(entry.credential);
-    const session = sessions.get(idOfAccount);
-    if (session?.connectionDrain) await session.connectionDrain;
-    if (closing) throw new Error('控制台已关闭');
-    validateSelection();
-    const roleWorldId = choice.role.worldId || choice.worldId;
-    const previous = loadStore().accounts.find(account => account.id === idOfAccount);
-    const currentRoleId = uidText(session?.player?.playerId ?? session?.player?.id);
-    const selectedRoleId = uidText(choice.role.id);
-    const sameRole = currentRoleId && selectedRoleId ? currentRoleId === selectedRoleId
-      : toNumber(session?.player?.worldId) === roleWorldId
-        && toNumber(session?.player?.bornWorldId || previous?.login?.worldId) === choice.worldId;
-    if (session && (stopExisting || !sameRole || session.loginBlocked || session.loginRecoveryJob)) {
-      const reason = stopExisting ? `${sourceLabel}已重新登录，正在更新连接`
-        : sameRole ? '账号凭证已更新，正在恢复连接' : '已选择其他角色，停止旧角色任务';
-      requireProductionSync(session);
-      session.generation++;
-      stopLoop(session, reason, { preserveAutoStart: true });
-      saveAutomation(session.id, { enabled: false });
-      session.stages.stop(reason);
-      session.mutualAid.stop(reason);
-      for (const task of session.trials.values()) task.stop(reason);
-      await closeSessionConnection(session, { includeWorld: true });
-    }
-    if (closing) throw new Error('控制台已关闭');
-    validateSelection();
-    const store = loadStore();
-    const existing = store.accounts.find(account => account.id === idOfAccount);
-    const credential = { ...entry.credential, login: { ...entry.credential.login, worldId: choice.worldId } };
-    const fallbackLabel = ['alipay', 'douyin'].includes(entry.credential.source) ? '未命名角色' : entry.userName;
-    const label = existing?.label && existing.label !== existing.lastSeen?.nickname ? existing.label : choice.role.nickname || fallbackLabel;
-    const { account, created } = upsertAccount(store, credential, { label });
-    account.automation = { ...account.automation, autoStart: autoStartEnabled(account), loginBlocked: false, loginRecovery: null };
-    rememberSeen(account, { ...choice.role, nickname: choice.role.nickname || '未命名角色', worldId: roleWorldId });
-    setActive(store, account.id);
-    saveStore(store);
-    rememberLogAccounts(store.accounts);
-    emit(null, 'info', `${sourceLabel}${created ? '已新增' : '已更新'}账号 ${describeAccount(account).title}，已选择 ${choice.worldName} ${choice.role.nickname || '未命名角色'}`);
-    const savedSession = sessionFor(account.id);
-    savedSession.loginBlocked = false;
-    savedSession.loginRecovery = null;
-    void startAutomaticLoop(savedSession);
-    return {
-      ok: true,
-      account: { ...describeAccount(account, { active: true }), status: accountStatus(savedSession) },
-      selectedRole: { nickname: choice.role.nickname || '未命名角色', worldId: choice.worldId, worldName: choice.worldName,
-        roleWorldId, roleWorldName: choice.role.worldName || choice.worldName },
-    };
+    await roleRotations.pause(loginAccountId(entry.credential), '重新登录并选择角色，暂停区服轮换');
+    return withLoginLock(entry.credential, async () => {
+      validateSelection();
+      const credential = { ...entry.credential, login: { ...entry.credential.login, worldId: choice.worldId } };
+      const existingRole = findRoleAccount(loadStore(), credential, choice.role);
+      const session = liveLoginSession(entry.credential) || (existingRole && sessions.get(existingRole.id));
+      if (session?.connectionDrain) await session.connectionDrain;
+      if (closing) throw new Error('控制台已关闭');
+      const roleWorldId = choice.role.worldId || choice.worldId;
+      const previous = existingRole;
+      const currentRoleId = uidText(session?.player?.playerId ?? session?.player?.id);
+      const selectedRoleId = uidText(choice.role.id);
+      const sameRole = currentRoleId && selectedRoleId ? currentRoleId === selectedRoleId
+        : toNumber(session?.player?.worldId) === roleWorldId
+          && toNumber(session?.player?.bornWorldId || previous?.login?.worldId) === choice.worldId;
+      if (session && (stopExisting || !sameRole || session.loginBlocked || session.loginRecoveryJob)) {
+        const reason = stopExisting ? `${sourceLabel}已重新登录，正在更新连接`
+          : sameRole ? '账号凭证已更新，正在恢复连接' : '已选择其他角色，停止旧角色任务';
+        requireProductionSync(session);
+        session.generation++;
+        stopLoop(session, reason, { preserveAutoStart: true });
+        saveAutomation(session.id, { enabled: false });
+        session.stages.stop(reason);
+        session.mutualAid.stop(reason);
+        for (const task of session.trials.values()) task.stop(reason);
+        await closeSessionConnection(session, { includeWorld: true });
+      }
+      if (closing) throw new Error('控制台已关闭');
+      validateSelection();
+      const store = loadStore();
+      const existing = findRoleAccount(store, credential, choice.role);
+      const fallbackLabel = ['alipay', 'douyin'].includes(entry.credential.source) ? '未命名角色' : entry.userName;
+      const label = existing?.label && existing.label !== existing.lastSeen?.nickname ? existing.label : choice.role.nickname || fallbackLabel;
+      const { account: selected, created } = upsertAccount(store, credential, { label, role: choice.role });
+      rememberWorlds(store, selected, { recentWorlds: entry.choices });
+      const account = store.accounts.find(row => row.id === selected.id);
+      store.selectedRoles[loginAccountId(account)] = account.id;
+      account.automation = { ...account.automation, autoStart: autoStartEnabled(account), loginBlocked: false, loginRecovery: null };
+      rememberSeen(account, { ...choice.role, nickname: choice.role.nickname || '未命名角色', worldId: roleWorldId });
+      setActive(store, account.id);
+      saveStore(store);
+      rememberLogAccounts(store.accounts);
+      emit(null, 'info', `${sourceLabel}${created ? '已新增' : '已更新'}账号 ${describeAccount(account).title}，已选择 ${choice.worldName} ${choice.role.nickname || '未命名角色'}`);
+      const savedSession = sessionFor(account.id);
+      savedSession.loginBlocked = false;
+      savedSession.loginRecovery = null;
+      await claimRole(account);
+      void startAutomaticLoop(savedSession);
+      return {
+        ok: true,
+        account: { ...describeAccount(account, { active: true }), status: accountStatus(savedSession) },
+        selectedRole: { nickname: choice.role.nickname || '未命名角色', worldId: choice.worldId, worldName: choice.worldName,
+          roleWorldId, roleWorldName: choice.role.worldName || choice.worldName },
+      };
+    });
   }
 
   async function savePhoneRole(pending, entry, choice) {
-    const result = await saveSelectedRole(entry, choice);
+    const result = await saveSelectedRole(entry, choice, { validateSelection: () => {
+      if (pendingPhoneLogins.get(pending.id) !== pending || Date.now() - pending.createdAt >= PHONE_PENDING_MS) {
+        throw new Error('登录结果已过期或已取消，请重新登录');
+      }
+    } });
     pendingPhoneLogins.delete(pending.id);
     return result;
   }
@@ -615,6 +664,126 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     return sessions.get(id);
   }
 
+  function withLoginLock(account, work) {
+    const key = loginAccountId(account);
+    const job = (loginLocks.get(key) ?? Promise.resolve()).then(work, work);
+    loginLocks.set(key, job);
+    const clear = () => { if (loginLocks.get(key) === job) loginLocks.delete(key); };
+    job.then(clear, clear);
+    return job;
+  }
+
+  function liveLoginSession(account) {
+    const key = loginAccountId(account), store = loadStore();
+    return [...sessions.values()].find(session => {
+      const row = store.accounts.find(entry => entry.id === session.id);
+      return row && loginAccountId(row) === key && (session.client?.connected || session.connecting || session.loop.running);
+    });
+  }
+
+  function requireSelectedRole(account) {
+    const selected = loadStore().selectedRoles[loginAccountId(account)];
+    if (selected && selected !== account.id) throw Object.assign(new Error('同一账号已选择其他区服，请点击「切换区服」后操作此角色'), { recoverable: false });
+    if (!rotationAllowsLogin(account)) throw Object.assign(new Error('此账号由区服轮换管理，当前角色不在运行时段内；可在账号页继续轮换或手动连接'), { recoverable: false });
+  }
+
+  function rotationAllowsLogin(account) {
+    if (!roleRotations.managed(account)) return true;
+    if (roleRotations.entryFor(loginAccountId(account)).runtime.paused) {
+      const session = sessions.get(account.id);
+      return Boolean(session?.manualLogin || session?.client?.connected);
+    }
+    return roleRotations.authorized(account);
+  }
+
+  async function stopRotationLogin(loginId, reason) {
+    const peers = loadStore().accounts.filter(account => loginAccountId(account) === loginId);
+    for (const account of peers) {
+      const session = sessions.get(account.id);
+      if (!session) continue;
+      session.manualLogin = false;
+      if (session.client || session.connecting || session.loop.running || loginRecoveryActive(session)) await retireRole(session, reason);
+    }
+  }
+
+  async function startRotationRole(account, allowed) {
+    const session = sessionFor(account.id);
+    if (session.loop.controller?.signal.aborted) await session.loop.job;
+    if (!allowed() || closing || session.paused) throw new Error('轮换已取消或此角色已暂停托管');
+    if (session.loginBlocked && !loginRecoveryActive(session)) throw new Error('此角色被顶号或重连已停止，请先检查登录设置');
+    cancelLoginRecovery(session);
+    await session.loginRecoveryJob?.catch(() => {});
+    try { await connect(session, account, { explicitLogin: true, rotationLogin: true }); }
+    catch (error) { error.closeReason ??= session.client?.closeReason; throw error; }
+    if (!allowed() || closing || !session.client?.connected) throw new Error('轮换时段已结束，取消开始挂机');
+    startLoop(session, account, { rounds: 0, rotation: true });
+  }
+
+  async function interruptRotation(account, manualLogin = false) {
+    if (!roleRotations.managed(account)) return;
+    if (!roleRotations.entryFor(loginAccountId(account)).runtime.paused) await roleRotations.pause(loginAccountId(account), '手动操作已暂停此账号的区服轮换');
+    sessionFor(account.id).manualLogin = manualLogin;
+  }
+
+  async function retireRole(session, reason) {
+    requireProductionSync(session);
+    session.generation++;
+    stopLoop(session, reason, { preserveAutoStart: true });
+    session.stages.stop(reason);
+    session.mutualAid.stop(reason);
+    for (const task of session.trials.values()) task.stop(reason);
+    await closeSessionConnection(session, { includeWorld: true });
+    // 旧任务可能正等待账号锁；代际检查与关闭连接会取消它们，不能在持锁时等它们取锁。
+  }
+
+  async function claimRole(account) {
+    const store = loadStore(), key = loginAccountId(account);
+    if (!store.accounts.some(row => row.id === account.id)) throw new Error('区服角色已移除');
+    const previousId = store.selectedRoles[key];
+    const previous = store.accounts.find(row => row.id === previousId);
+    const oldSession = previous && sessions.get(previous.id);
+    const restore = previous && { account: previous, session: oldSession,
+      connected: Boolean(oldSession?.client?.connected), running: Boolean(oldSession?.loop.running), job: oldSession?.loop.job };
+    store.selectedRoles[key] = account.id;
+    saveStore(store);
+    for (const peer of store.accounts) {
+      if (peer.id === account.id || loginAccountId(peer) !== key) continue;
+      const session = sessions.get(peer.id);
+      if (session && (session.client || session.connecting || session.queueTail || session.loop.running || loginRecoveryActive(session))) {
+        await retireRole(session, '已切换到其他区服，停止此角色任务和连接');
+      }
+    }
+    if (restore?.session) restore.generation = restore.session.generation;
+    return restore;
+  }
+
+  function activateRole(account) {
+    const key = loginAccountId(account), pending = roleSwitches.get(key);
+    if (pending) {
+      if (pending.id === account.id) return pending.job;
+      throw new Error('该账号正在切换区服，请等待本次切换完成');
+    }
+    const session = sessionFor(account.id);
+    const job = (async () => {
+      if (session.connecting) await session.connecting.catch(() => {});
+      session.switching = true;
+      emit(session, 'state', '正在切换区服');
+      try {
+        await connect(session, account, { explicitLogin: true, activate: true });
+        await startAutomaticLoop(session);
+        return { ok: true, activeId: account.id, account: describeAccount(loadStore().accounts.find(row => row.id === account.id)),
+          player: describeRole(session.player), status: accountStatus(session) };
+      } finally {
+        session.switching = false;
+        emit(session, 'state', '区服切换已结束');
+      }
+    })();
+    roleSwitches.set(key, { id: account.id, job });
+    const clear = () => { if (roleSwitches.get(key)?.job === job) roleSwitches.delete(key); };
+    job.then(clear, clear);
+    return job;
+  }
+
   function usageFor(session) {
     return createUsageLedger(session.id, { now: () => Date.now() + (session.client?.serverClockOffsetMs ?? 0) });
   }
@@ -793,6 +962,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       finally {
         client?.stop();
         if (includeWorld) worldClient?.stop();
+        if (includeWorld && session.worldClient === worldClient) session.worldClient = null;
         if (session.generation === generation && session.client === client) {
           session.client = session.player = null;
           if (session.connecting === connecting) session.connecting = null;
@@ -947,6 +1117,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   function wire(session, instance) {
+    observeAutomationResults(instance, {
+      context: () => session.client === instance && session.loop.running && !session.loop.controller?.signal.aborted && session.resultVisit
+        ? { ...session.resultVisit, roleId: session.id } : null,
+      record: (...args) => automationResults.record(...args), operation: (...args) => automationResults.operation(...args),
+      onError: error => resultsSafe(() => { throw error; }), now: rotationNow,
+    });
+    instance.on('close', () => { if (session.client === instance) resultsSafe(() => automationResults.online(session.resultVisit?.segmentId, false)); });
     watchBasePushes(instance);
     watchProductionTimings(instance, loadConfigSafe);
     watchGuildShipPushes(instance);
@@ -1281,6 +1458,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
 
   // 账号级恢复独立于挂机循环。页面读取只能观察等待，循环在旧轮次退出后复用这次恢复。
   function startLoginRecovery(session) {
+    const account = loadStore().accounts.find(row => row.id === session.id);
+    if (account && !rotationAllowsLogin(account)) { cancelLoginRecovery(session); return; }
     if (closing || sessions.get(session.id) !== session || session.paused || !loginRecoveryActive(session) || session.loginRecoveryJob) return session.loginRecoveryJob;
     const controller = new AbortController();
     session.loginRecoveryController = controller;
@@ -1400,7 +1579,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       const target = store.accounts.find((entry) => entry.id === account.id);
       if (!target) return;
       const role = describeRole(player);
-      target.lastSeen = { nickname: role?.nickname ?? null, level: role?.level ?? null, power: role?.power ?? null, worldId: role?.worldId ?? null, at: new Date().toISOString() };
+      rememberSeen(target, role);
       if (!target.label && role?.nickname) target.label = role.nickname;
       saveStore(store);
       rememberLogAccounts(store.accounts);
@@ -1434,6 +1613,12 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       client.stop();
       throw new Error('连接已取消');
     }
+    const actualRole = describeRole(response.playerInfo);
+    if (account.roleId && (uidText(actualRole?.id) !== account.roleId
+      || account.bornWorldId && actualRole?.bornWorldId && Number(actualRole.bornWorldId) !== account.bornWorldId)) {
+      client.stop();
+      throw Object.assign(new Error('登录返回的角色与所选区服不一致，已停止连接，请重新读取区服列表'), { recoverable: false });
+    }
     session.player = response.playerInfo || null;
     watchResidentRefreshes(client,usageFor(session),session.player);
     client.send('LoginFinishRequest', {});
@@ -1463,6 +1648,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             || cause === 'kicked' && reconnectPolicy(session).autoReconnect);
         client.stop();
         error.recoverable = recoverable;
+        error.closeReason = cause ?? (recoverable ? 'network' : 'stopped');
         error.productionSyncRetry = recoverable && cause !== 'kicked' && client.fatalReason !== 'SCChannelExpired';
         error.productionSyncGeneration = session.generation;
         emit(session, 'warn', '生产状态暂未同步，保留原记录并暂停本次操作，后续连接会自动重试：' + error.message);
@@ -1486,6 +1672,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       throw new Error('连接初始化期间已断开或取消');
     }
     persistIdentity(account, session.player);
+    if (protocolFor(client).GameWorldListRequest && protocolFor(client).GameWorldListResponse) {
+      try {
+        const worlds = await listWorlds(client);
+        if (session.client === client && session.generation === generation && client.connected) {
+          const store = loadStore(), fresh = store.accounts.find(row => row.id === account.id);
+          if (fresh) { rememberWorlds(store, fresh, worlds); saveStore(store); }
+        }
+      } catch (error) { emit(session, 'warn', '区服列表暂未更新，可在账号页重新读取：' + error.message); }
+    }
+    if (session.client !== client || session.generation !== generation || session.paused || !client.connected) {
+      throw new Error('连接初始化期间已断开或取消');
+    }
     const role = describeRole(session.player);
     emit(session, 'info', `已进入游戏：${role?.nickname ?? '未知角色'}（${role?.level ?? '?'} 级）`);
     return { url: account.url, result: response.result, initSeqNo: response.initSeqNo, playerInfo: session.player };
@@ -1497,7 +1695,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     }
   }
 
-  async function connect(session, account, { backgroundRecovery = false, explicitLogin = false, loginRecoveryController = null } = {}) {
+  async function connect(session, account, { backgroundRecovery = false, explicitLogin = false, loginRecoveryController = null, activate = false, rotationLogin = false } = {}) {
     if (closing || session.connectionDrain) throw new Error('账号正在结束当前挑战并恢复阵容，请稍后连接');
     if (session.paused) throw new Error('账号已暂停，请先恢复托管');
     const authorizedRecovery = loginRecoveryController && loginRecoveryController === session.loginRecoveryController
@@ -1507,7 +1705,42 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     if (session.loop.running && (session.loop.recovery || session.loop.connectionFailure) && !backgroundRecovery && !authorizedRecovery) throw new Error('后台正在恢复连接，请稍后重试');
     if (session.connecting) return session.connecting;
     if (explicitLogin && session.loginRecovery) saveLoginRecovery(session, null);
-    const connecting = loginSession(session, account);
+    const generation = session.generation;
+    let restoreRole = null;
+    const connecting = withLoginLock(account, async () => {
+      if (closing || session.paused || session.generation !== generation) throw new Error('连接已取消');
+      if (rotationLogin && !roleRotations.authorized(account)) throw Object.assign(new Error('轮换已取消或运行时段已结束'), { recoverable: false });
+      if (!explicitLogin) requireSelectedRole(account);
+      const restore = explicitLogin ? await claimRole(account) : null;
+      try {
+        const fresh = loadStore().accounts.find(row => row.id === account.id);
+        if (!fresh) throw new Error('区服角色已移除');
+        const result = activate && session.client?.connected && session.player
+          ? { playerInfo: session.player } : await loginSession(session, fresh);
+        if (activate) {
+          const store = loadStore();
+          if (session.generation !== generation || session.paused || !session.client?.connected) throw new Error('区服切换已取消');
+          setActive(store, account.id);
+          saveStore(store);
+        }
+        return result;
+      } catch (error) {
+        // 切区失败要释放新角色；普通重连保留失败连接信息，供恢复策略判断原因。
+        if (rotationLogin) error.closeReason ??= session.client?.closeReason;
+        if (activate || restore && restore.account.id !== account.id) {
+          session.client?.stop();
+          session.client = session.player = null;
+        }
+        const store = loadStore(), key = loginAccountId(account);
+        if (!rotationLogin && restore && restore.account.id !== account.id && !closing && session.generation === generation
+          && store.selectedRoles[key] === account.id && store.accounts.some(row => row.id === restore.account.id)) {
+          store.selectedRoles[key] = restore.account.id;
+          saveStore(store);
+          restoreRole = restore;
+        }
+        throw error;
+      }
+    });
     session.connecting = connecting;
     try {
       const result = await connecting;
@@ -1517,6 +1750,21 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       }
       return result;
     } catch (error) {
+      // 先释放账号锁，旧任务才能退出；恢复连接仍通过同一账号锁串行执行。
+      if (restoreRole?.session && (restoreRole.connected || restoreRole.running)) {
+        const previous = restoreRole.session;
+        try {
+          await restoreRole.job?.catch(() => {});
+          if (!closing && !previous.paused && previous.generation === restoreRole.generation) {
+            const account = loadStore().accounts.find(row => row.id === restoreRole.account.id);
+            if (account) {
+              await ensureConnected(previous, account, { backgroundRecovery: true });
+              if (restoreRole.running) await startAutomaticLoop(previous);
+              emit(previous, 'info', '切换失败，已恢复原区服连接');
+            }
+          }
+        } catch (recoveryError) { emit(previous, 'warn', '切换失败，原区服待重新连接：' + recoveryError.message); }
+      }
       if (explicitLogin && error.productionSyncRetry && session.loginBlocked && !session.paused
         && session.generation === error.productionSyncGeneration) {
         saveAutomation(session.id, { loginBlocked: false });
@@ -1530,6 +1778,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   async function ensureConnected(session, account, options) {
+    if (!options?.explicitLogin) requireSelectedRole(account);
     if (closing || session.connectionDrain) throw new Error('账号正在结束当前挑战并恢复阵容，请稍后操作');
     if (session.paused) throw new Error('账号已暂停，请先恢复托管');
     if (session.connecting || !session.client?.connected || !session.player) await connect(session, account, options);
@@ -1558,6 +1807,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       state: session.client?.snapshot?.().state ?? 'IDLE',
       busy: session.busy,
       looping: session.loop.running,
+      switching: Boolean(session.switching),
       loopStopping: Boolean(session.loop.running && session.loop.controller?.signal.aborted),
     };
   }
@@ -1863,7 +2113,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     try {
       const versionError = consoleVersionError(req, consoleVersion);
       if (versionError) { json(versionError, versionError.status); return; }
-      if (['POST /api/dailies/run', 'POST /api/tasks/run', 'POST /api/world/run', 'POST /api/worlds/enter'].includes(route)) {
+      if (['POST /api/dailies/run', 'POST /api/tasks/run', 'POST /api/world/run'].includes(route)) {
         const { session } = resolve(parsed);
         parsed.searchParams.set('account', session.id);
         await new Promise((acquired, reject) => {
@@ -1893,6 +2143,31 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (!resources) throw new Error('当前服务未启用资源更新器');
         const result = await resources.check();
         json({ result, ...resources.view(), protocol: protocolStatus() });
+        return;
+      }
+      if (route === 'GET /api/automation-results') {
+        const account = loadStore().accounts.find(row => row.id === parsed.searchParams.get('account'));
+        if (!account) throw new Error('请选择要查看成果的区服');
+        const scope = parsed.searchParams.get('scope') || 'role', period = parsed.searchParams.get('period') || 'current';
+        if (!['role', 'login'].includes(scope) || !['current', 'today'].includes(period)) throw new Error('成果筛选参数不支持');
+        const page = Math.max(1, Math.min(10000, Number.parseInt(parsed.searchParams.get('page') || '1', 10) || 1));
+        const data = automationResults.view(resultsAccount(account), { scope, period, page });
+        const config = loadConfigSafe();
+        const ids = new Set([...Object.keys(data.totals.gains), ...Object.keys(data.totals.costs)]);
+        data.materials = Object.fromEntries([...ids].map(id => {
+          let name = config?.materialName?.(id), icon = null;
+          if (id.startsWith('hero:') || id.startsWith('hero-fragment:')) {
+            const heroId = id.split(':')[1]; name = (config?.tables?.HeroCfg?.data.find(row => row.id === heroId)?.name || heroId) + (id.startsWith('hero-fragment:') ? '碎片' : '');
+            try { icon = iconThumb(heroIcon(heroId)); } catch { /* Text remains available without art. */ }
+          } else {
+            try { icon = iconThumb(materialIcon(id)); } catch { /* Reading a report never requires game resources. */ }
+          }
+          if (id.startsWith('antique:') || id.startsWith('antique-fragment:')) name = id.split(':')[1] + (id.startsWith('antique-fragment:') ? '碎片' : '');
+          if (id.startsWith('badge:')) name = id.split(':')[1] + '徽章';
+          if (!name || name === '未知材料') name = ({ GOLD: '金币', RUBY: '钻石', EXP: '经验', 'result:equipment': '获得装备（件）' })[id] || id;
+          return [id, { name, icon }];
+        }));
+        json(data);
         return;
       }
       if (route === 'GET /api/settings') {
@@ -2499,12 +2774,34 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         json(parsed.searchParams.get('reveal') === '1' ? revealAccount(account) : describeAccount(account, { active: account.id === store.activeId }));
         return;
       }
+      if (route === 'GET /api/role-rotations') {
+        json({ groups: roleRotations.view(), now: rotationNow() });
+        return;
+      }
+      if (route === 'POST /api/role-rotations/save' || route === 'POST /api/role-rotations/pause') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (typeof payload.loginId !== 'string' || !loadStore().accounts.some(account => loginAccountId(account) === payload.loginId)) throw new Error('登录账号不存在，请刷新账号列表');
+        if (route.endsWith('/save')) await roleRotations.configure(payload.loginId, payload.settings, payload.revision);
+        else {
+          if (typeof payload.paused !== 'boolean') throw new Error('请选择暂停或继续轮换');
+          if (payload.paused) await roleRotations.pause(payload.loginId);
+          else await roleRotations.resume(payload.loginId);
+        }
+        json({ group: roleRotations.view().find(group => group.loginId === payload.loginId), now: rotationNow() });
+        return;
+      }
       if (route === 'POST /api/accounts/active') {
         const payload = jsonBody();
         needConfirm(payload);
         const store = loadStore();
         const account = pickAccount(store, payload.id);
         if (!account) throw new Error('没有这个账号');
+        if (payload.connect === true) {
+          await interruptRotation(account, true);
+          json(await activateRole(account));
+          return;
+        }
         setActive(store, account.id);
         saveStore(store);
         emit(null, 'info', `当前账号切到 ${describeAccount(account).title}`);
@@ -2596,9 +2893,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (!choice || payload.worldId !== undefined) throw new Error('请选择列表中的区服和角色后再保存');
         alipaySaving = true;
         try {
-          const session = sessions.get(accountId(pending.entry.credential));
-          const save = () => saveAlipayRole(pending, choice);
-          const result = session && !session.paused ? await enqueue(session, save) : await save();
+          const result = await saveAlipayRole(pending, choice);
           // 凭证已落盘，临时浏览器清理失败也应返回已保存的账号。
           try { await alipayLogin.cancel(payload.id); } catch {}
           json(result);
@@ -2723,7 +3018,6 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (!selected) throw new Error('请选择列表中的区服和角色后再保存');
         pending.busy = true;
         try {
-          const session = sessions.get(accountId(selected.entry.credential));
           const save = () => {
             if (closing) throw new Error('控制台已关闭');
             if (pendingPhoneLogins.get(pending.id) !== pending || Date.now() - pending.createdAt >= PHONE_PENDING_MS) {
@@ -2731,7 +3025,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             }
             return savePhoneRole(pending, selected.entry, selected.choice);
           };
-          json(session && !session.paused ? await enqueue(session, save) : await save());
+          json(await save());
         } finally {
           pending.busy = false;
         }
@@ -2752,6 +3046,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (typeof paused !== 'boolean') throw new Error('请选择暂停或恢复');
         if (typeof start !== 'boolean' || (start && paused)) throw new Error('开始托管需要先恢复账号');
         if (start) needConfirm(payload);
+        await interruptRotation(account, !paused);
         if (session.connectionDrain) await session.connectionDrain;
         if (closing || sessions.get(session.id) !== session || !loadStore().accounts.some(entry => entry.id === account.id)) {
           throw new Error('账号已移除或控制台已关闭');
@@ -2793,13 +3088,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       if (route === 'POST /api/connect') {
         const payload = jsonBody();
         const { account, session } = scoped_(parsed);
+        await interruptRotation(account, true);
         const result = await connect(session, account, { explicitLogin: true });
         await startAutomaticLoop(session);
         json(result);
         return;
       }
       if (route === 'POST /api/disconnect') {
-        const { session } = scoped_(parsed);
+        const { account, session } = scoped_(parsed);
+        await interruptRotation(account);
         if (session.connectionDrain) await session.connectionDrain;
         requireProductionSync(session);
         session.generation++;
@@ -3422,26 +3719,36 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       }
       if (route === 'GET /api/worlds') {
         const { account, session } = scoped_(parsed);
-        const instance = await ensureConnected(session, account);
-        json({ ...(await listWorlds(instance)), currentPlayer: describeRole(session.player) });
+        const data = await readPhoneWorlds(toCredential(account));
+        const store = loadStore();
+        const fresh = store.accounts.find(row => row.id === account.id);
+        if (!fresh) throw new Error('区服角色已移除');
+        rememberWorlds(store, fresh, data);
+        saveStore(store);
+        json({ ...data, currentPlayer: describeRole(liveLoginSession(account)?.player || session.player) });
         return;
       }
-      // 进服自己开一条短连接，所以不会打扰控制台这边正在跑的会话。
+      // 只允许进入账号已有角色；使用主会话交接，绝不再开临时登录挤掉主连接。
       if (route === 'POST /api/worlds/enter') {
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
         if (!payload.worldId) throw new Error('要指定 worldId');
         if (session.paused) throw new Error('账号已暂停，请先恢复托管');
-        const client = new GameClient({ url: account.url, protocol: currentProtocol() });
-        session.worldClient = client;
-        try {
-          const entered = await enterWorld({ client, login: account.login }, Number(payload.worldId));
-          json({ player: describeRole(entered.player) });
-        } finally {
-          client.stop();
-          session.worldClient = null;
+        const worldId = Number(payload.worldId);
+        if (!Number.isSafeInteger(worldId) || worldId <= 0) throw new Error('区服 ID 无效');
+        let store = loadStore();
+        let target = store.accounts.find(row => loginAccountId(row) === loginAccountId(account) && row.bornWorldId === worldId && row.roleId);
+        if (!target) {
+          const worlds = await readPhoneWorlds(toCredential(account));
+          store = loadStore();
+          rememberWorlds(store, store.accounts.find(row => row.id === account.id), worlds);
+          saveStore(store);
+          target = store.accounts.find(row => loginAccountId(row) === loginAccountId(account) && row.bornWorldId === worldId && row.roleId);
         }
+        if (!target) throw new Error('该区服没有已确认的角色，请从区服列表选择');
+        await interruptRotation(target, true);
+        json(await activateRole(target));
         return;
       }
 
@@ -3792,6 +4099,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const payload = jsonBody();
         needConfirm(payload);
         const { account, session } = scoped_(parsed);
+        await interruptRotation(account, true);
         startLoop(session, account, { rounds: payload.rounds, everySeconds: payload.everySeconds, explicitLogin: true });
         json({ ...loopView(session), status: accountStatus(session) });
         return;
@@ -3825,7 +4133,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       if (route === 'POST /api/loop/stop') {
         const payload = jsonBody();
         needConfirm(payload);
-        const { session } = scoped_(parsed);
+        const { account, session } = scoped_(parsed);
+        await interruptRotation(account);
         stopLoop(session, '已暂停挂机', { stopManualTasks: false });
         json({ ok: true, running: session.loop.running, status: accountStatus(session) });
         return;
@@ -3926,7 +4235,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       if (closing || sessions.get(session.id) !== session || generation !== session.generation
         || session.paused || session.loop.running || session.loginBlocked && !loginRecoveryActive(session)) return;
       const account = loadStore().accounts.find(row => row.id === session.id);
-      if (!account || !autoStartEnabled(account)) return;
+      if (!account || !autoStartEnabled(account) || roleRotations.managed(account)) return;
+      if (loadStore().selectedRoles[loginAccountId(account)] !== account.id) return;
       startLoop(session, account, { rounds: 0 });
     } catch (error) {
       session.loop.error = error.message;
@@ -3935,6 +4245,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   }
 
   function stopLoop(session, reason, { cancelRecovery = true, preserveAutoStart = false, stopManualTasks = true } = {}) {
+    if (session.resultVisit) resultsSafe(() => {
+      automationResults.endSegment(session.resultVisit.segmentId);
+      if (session.resultVisit.kind !== 'rotation') automationResults.end(session.resultVisit.runId, reason, { preserve: closing });
+    });
     if (cancelRecovery) cancelLoginRecovery(session);
     if (stopManualTasks) session.pirateAdvance?.stop(reason);
     const loop = session.loop;
@@ -3970,14 +4284,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       if (options.explicitLogin || session.loginRecovery?.status !== 'connected') saveLoginRecovery(session, null);
       session.loginBlocked = false;
     }
-    saveAutomation(account.id, { enabled: rounds === 0, autoStart: rounds === 0, rounds, everySeconds, loginBlocked: session.loginBlocked });
+    saveAutomation(account.id, { enabled: rounds === 0, ...(!options.rotation ? { autoStart: rounds === 0 } : {}), rounds, everySeconds, loginBlocked: session.loginBlocked });
     Object.assign(loop, { running: true, rounds, completed: 0, everyMs: everySeconds * 1000,
       history: [], error: null, recovery: null, connectionFailure: null, challengeRun: createChallengeRun(), controller: new AbortController() });
+    const rotation = options.rotation ? roleRotations.entryFor(loginAccountId(account)) : null;
+    const resultVisit = resultsSafe(() => automationResults.begin(resultsAccount(account), {
+      kind: options.rotation ? 'rotation' : 'manual', key: rotation ? rotation.runtime.windowKey + ':' + rotation.runtime.controlToken : account.id,
+    }));
+    if (resultVisit) resultVisit.kind = options.rotation ? 'rotation' : 'manual';
+    session.resultVisit = resultVisit;
     const { signal } = loop.controller;
     emit(session, 'info', `自动挂机开始，${rounds === 0 ? '持续运行' : '共 ' + rounds + ' 轮'}，每 ${everySeconds} 秒检查一次；关闭网页后继续运行，请保留启动窗口`);
     trace(session, 'automation-run', { startedAt: RUN_VERSION, settingsRevision: session.preferencesRevision,
       rounds, everySeconds, tasks: loop.tasks, reconnect: reconnectPolicy(session), settings: settingsView(session).settings });
-    let credentialFailed = false, recoveryAttempts = 0;
+    let credentialFailed = false, recoveryAttempts = 0, loginAuthorized = options.explicitLogin === true;
     loop.job = (async () => {
       try {
         while (!signal.aborted && (rounds === 0 || loop.completed < rounds)) {
@@ -3987,7 +4307,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         let attemptClient;
         const cancelAttempt = () => {
           attemptController.abort();
-          if (attemptClient && session.client === attemptClient && (loop.recovery || !session.player)) attemptClient.stop();
+          const client = attemptClient ?? (!session.player ? session.client : null);
+          if (session.connecting && !session.player) session.generation++;
+          if (client && session.client === client && (loop.recovery || !session.player)) client.stop();
         };
         signal.addEventListener('abort', cancelAttempt, { once: true });
         try {
@@ -3998,11 +4320,25 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         if (session.loginBlocked) throw Object.assign(new Error('账号在别处登录，自动重连已停止，请检查登录设置和日志'), { recoverable: false });
         const currentAccount = loadStore().accounts.find(row => row.id === account.id);
         if (!currentAccount || session.paused) break;
-        const connecting = ensureConnected(session, currentAccount, { backgroundRecovery: true });
+        const connecting = ensureConnected(session, currentAccount, { backgroundRecovery: true, explicitLogin: loginAuthorized });
         attemptClient = session.client;
         const client = await connecting;
+        loginAuthorized = false;
         if (signal.aborted) return;
         if (attemptController.signal.aborted || !client.connected) throw Object.assign(new Error('连接尚未恢复'), { recoverable: true });
+        if (resultVisit) {
+          // Seed absolute quantities once per visit/connection, before any automated writes.
+          if (client.resultsSeed !== resultVisit.segmentId) {
+            const activeProtocol = protocolFor(client);
+            for (const name of ['AllItem', 'AllResource']) if (activeProtocol[name + 'Request'] && activeProtocol[name + 'Response']) {
+              try { await client.request(name + 'Request', {}, name + 'Response', 3000); } catch { /* Rewards still provide exact quantities when a baseline is unavailable. */ }
+            }
+            client.resultsSeed = resultVisit.segmentId;
+          }
+          if (signal.aborted) return;
+          if (!client.connected) throw Object.assign(new Error('连接尚未恢复'), { recoverable: true });
+          resultsSafe(() => automationResults.online(resultVisit.segmentId, true));
+        }
         if (loop.recovery) emit(session, 'info', '游戏连接已恢复，继续挂机；未确认操作仍按原记录核对');
         loop.recovery = null;
         const completedBefore = loop.completed;
@@ -4032,8 +4368,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           getEveryMs: () => loop.everyMs,
           onMaintenance:view=>{loop.fleetMaintenance=view;},
           onRound(summary) {
+            if (resultVisit) resultsSafe(() => automationResults.record(resultVisit.runId, session.id, { kind: 'round', label: '完成挂机轮次' }));
             summary = { ...summary, round: completedBefore + summary.round };
             recoveryAttempts = 0;
+            if (options.rotation) roleRotations.recovered(account);
             if (session.loginRecovery?.status === 'connected') saveLoginRecovery(session, null);
             if (summary.world.factories?.length) {
               try {
@@ -4046,6 +4384,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             emit(session, 'info', formatLoopRound(summary), summary.world.population ? { worldUpdated: true } : undefined);
           },
           onStep(entry) {
+            if (resultVisit) resultsSafe(() => automationResults.step(resultVisit.runId, session.id, { ...entry, resultVisitId: resultVisit.segmentId, resultCategory: LOG_CATEGORIES[classifyLog(entry.step?.label || entry.label || entry.title, { request: entry.step?.request || entry.request })] }));
             entry = { ...entry, round: completedBefore + entry.round };
             const statusKey = (entry.step?.request==='SetFactoryAutoProduceRequest'?'nativeProduce':null) || entry.taskKey || (['万吨巨轮','城战接续','装备锻造','藏品养成','联盟情报'].includes(entry.category)?entry.category:null) || (entry.step?.kind ? worldTaskKey(entry.step.kind) : null) || entry.category || entry.title || entry.label;
             loop.controlStatus ??= new Map();
@@ -4083,6 +4422,11 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
               (error.recoverable === true || ['network', 'heartbeat-timeout', 'sequence-gap'].includes(failedClient?.closeReason)
                 || /login timeout|socket error during login|socket closed during login|^not connected$/i.test(error.message)));
           if (!recoverable) throw error;
+          if (options.rotation) {
+            error.recoverable = true;
+            error.closeReason ??= failedClient?.closeReason;
+            throw error;
+          }
           failedClient?.stop();
           if (session.loginRecovery?.status === 'connected') {
             blockImplicitLogin(session, true);
@@ -4107,8 +4451,13 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           if (error.loginResponse) credentialFailed = true;
           else saveAutomation(account.id, { enabled: false });
           emit(session, 'error', `自动挂机中止：${error.message}`);
+          if (options.rotation) await roleRotations.disconnected(account, error, rotation?.runtime.lease);
         }
       } finally {
+        if (resultVisit) resultsSafe(() => {
+          automationResults.endSegment(resultVisit.segmentId);
+          if (!options.rotation) automationResults.end(resultVisit.runId, loop.error || '挂机已结束', { preserve: closing });
+        });
         loop.running = false;
         loop.controller = null;
         loop.attemptController = null;
@@ -4247,7 +4596,9 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           fs.watchFile(settingsFile(), { interval: 1000, persistent: false }, settingsFileChanged);
           settingsWatchStarted = true;
           for (const account of loadStore().accounts) {
+            if (roleRotations.managed(account)) continue;
             if (account.automation?.autoStart === undefined) saveAutomation(account.id, { autoStart: autoStartEnabled(account) });
+            if (loadStore().selectedRoles[loginAccountId(account)] !== account.id) continue;
             const session = sessionFor(account.id);
             if (session.settingsRecovery?.required || account.automation?.paused) continue;
             if (!autoStartEnabled(account) && !account.automation?.loginBlocked) continue;
@@ -4259,6 +4610,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             }
             void startAutomaticLoop(session);
           }
+          roleRotations.start();
           resolve(address);
         });
       });
@@ -4266,6 +4618,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     close: async () => {
       closing = true;
       if (settingsWatchStarted) fs.unwatchFile(settingsFile(), settingsFileChanged);
+      const rotationsClosed = roleRotations.close();
       clearAlipayRoles();
       await alipayLogin.close();
       for (const client of phonePreviewClients) client.stop();
@@ -4284,10 +4637,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         drains.push(closeSessionConnection(session, { includeWorld: true }));
       }
       await Promise.all(drains);
+      await rotationsClosed;
+      resultsSafe(() => automationResults.close());
       return new Promise((resolve) => server.close(() => { traceLog.close().then(resolve); }));
     },
     emit,
     sessions,
+    roleRotations,
+    automationResults,
     captureState: captureController.captureState,
   };
 }

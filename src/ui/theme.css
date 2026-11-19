@@ -279,6 +279,8 @@ html[data-theme="dark"] {
   .account-menu-content { @apply rounded-md border bg-popover text-popover-foreground shadow-md; }
   .account-card-menu > summary { @apply hover:bg-accent hover:no-underline; }
   .account-empty { @apply rounded-xl border border-dashed bg-card; }
+  .rotation-role { @apply rounded-lg border bg-card; }
+  .rotation-order button { @apply rounded-md border border-input; }
   .account-add-body .phone-help { @apply border-t; }
   .phone-role:has(input:checked) { @apply border-ring bg-accent; }
   .phone-role:has(input:focus-visible) { @apply ring-[3px] ring-ring/50; }

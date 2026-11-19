@@ -12,6 +12,8 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, '[]');
 const { GameClient } = await import('../src/client.mjs');
 const { saveStore, loadStore } = await import('../src/accounts.mjs');
 const { createConsole } = await import('../src/server.mjs');
+const { createDeclaredProtocol } = await import('./fixtures/declared-protocol.mjs');
+const protocol = createDeclaredProtocol(['OnWaterRequest', 'OnWaterResponse', 'AllItemRequest', 'AllItemResponse', 'AllResourceRequest', 'AllResourceResponse']);
 const { automationTasks } = await import('../src/automation.mjs');
 const { createUsageLedger } = await import('../src/automation-settings.mjs');
 const { beginOrderMaterialSpend, pendingOrderMaterialSpends, pendingFarmMaterialSpends } = await import('../src/order-reservations.mjs');
@@ -128,7 +130,7 @@ async function fixture({ delay = 140, realTime = false } = {}) {
   const { id, player, state } = addFakeAccount();
   let app, root;
   const launch = async () => {
-    app = createConsole({ port: 0, ...(realTime ? {} : { recoveryDelayMs: () => delay }) });
+    app = createConsole({ port: 0, protocol, ...(realTime ? {} : { recoveryDelayMs: () => delay }) });
     apps.add(app);
     root = await app.listen();
     await api('accounts');
@@ -248,7 +250,7 @@ try {
   });
 
   await test('重启保留下一次截止时间和已尝试次数，耗尽后网页读取不能重登', async () => {
-    const f = await fixture({ delay: 450 });
+    const f = await fixture({ delay: 2000 });
     try {
       await f.configure({ reconnectEnabled: true, maxRetries: 2 });
       await f.api('connect', {});
@@ -270,7 +272,7 @@ try {
   });
 
   await test('持续挂机等待中重启沿用原截止时间，恢复后同步并完成一轮', async () => {
-    const f = await fixture({ delay: 450 });
+    const f = await fixture({ delay: 2000 });
     try {
       await f.configure({ reconnectEnabled: true });
       await f.api('loop/start', { rounds: 0, everySeconds: 3600 });
@@ -334,12 +336,14 @@ try {
 
   await test('全天深夜配置采用深夜间隔并正确计算随机抖动和一秒下限', async () => {
     const f = await fixture({ realTime: true });
-    const random = Math.random;
+    const random = Math.random, realNow = Date.now;
     try {
       Math.random = () => 0;
       await f.configure({ reconnectEnabled: true, baseDelaySeconds: 30, jitterSeconds: 3,
         deep: { enabled: true, start: '00:00', end: '00:00', delaySeconds: 7 } });
       await f.api('connect', {});
+      const frozenNow = realNow();
+      Date.now = () => frozenNow;
       drop(f.session().client);
       await waitFor(() => f.session().loginRecovery?.status === 'waiting', '深夜等待');
       const start = f.session().loginRecovery.waitStartedAt;
@@ -353,7 +357,7 @@ try {
         assert.equal(f.saved().loginRecovery.nextAttemptAt, start + expectedDelay);
       }
       assert.equal(f.state.logins, 1);
-    } finally { Math.random = random; await f.close(); }
+    } finally { Math.random = random; Date.now = realNow; await f.close(); }
   });
 
   await test('等待中降低最大次数，在下一次实际登录前执行新上限', async () => {
@@ -448,7 +452,7 @@ try {
 
   for (const [route, body] of [['accounts/pause', { paused: true }], ['disconnect', {}], ['loop/stop', {}]]) {
     await test(route + '取消账号重连等待且重启后保持取消', async () => {
-      const f = await fixture({ delay: 250 });
+      const f = await fixture({ delay: 1500 });
       try {
         await f.configure({ reconnectEnabled: true });
         await f.api('connect', {});
@@ -458,7 +462,7 @@ try {
         assert.equal(f.saved().loginRecovery.status, 'cancelled');
         await f.stopApp();
         await f.launch();
-        await sleep(330);
+        await sleep(1580);
         assert.equal(f.state.logins, 1);
         assert.equal(f.session().loginRecovery.status, 'cancelled');
       } finally { await f.close(); }
@@ -503,7 +507,7 @@ try {
   });
 
   await test('同一服务的两个账号独立恢复，暂停一个账号保留其生产占用和预算', async () => {
-    const f = await fixture({ delay: 300 }), second = addFakeAccount();
+    const f = await fixture({ delay: 1500 }), second = addFakeAccount();
     try {
       await f.configure({ reconnectEnabled: true });
       await f.configure({ reconnectEnabled: false }, second.id);
