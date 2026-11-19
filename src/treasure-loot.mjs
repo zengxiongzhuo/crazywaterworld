@@ -9,7 +9,7 @@ import { exactAutomationId } from './automation-policy.mjs';
 import { readGuildMembers } from './guild.mjs';
 import { displayMaterial } from './config.mjs';
 import {watchTreasureTravel,matchesFollowDeparture} from './treasure-follow.mjs';
-import { matchesTreasureRewards } from './treasure-reward-filter.mjs';
+import { matchesTreasureRewards, treasureRewardPriority } from './treasure-reward-filter.mjs';
 import { emitDiagnostic } from './trace-log.mjs';
 
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
@@ -62,7 +62,7 @@ function rememberFollow(ledger, worldId, uid, buildingId, record) {
 }
 
 // 游戏没有数值吨位字段：TreasureLootCfg 将 BLUE/PURPLE/ORANGE 对应为小型/中型/万吨货轮。
-// 只接收协议与配置共同确认的类型；缺失开关沿用只抢万吨，未知品质不作小船放行。
+// 只接收协议与配置共同确认的类型。
 function treasureTypes(protocol, config) {
   const types = ['BLUE', 'PURPLE', 'ORANGE'].flatMap(quality => {
     const configured = rows(config, 'TreasureLootCfg').filter(row => row.quality === quality);
@@ -71,10 +71,10 @@ function treasureTypes(protocol, config) {
   });
   return types.filter(type => types.filter(other => other.color === type.color).length === 1);
 }
-const allowedTreasureType = (target, types, preferences) => types.find(type => type.color === target.color &&
-  (preferences?.onlyTenThousand === false || type.quality === 'ORANGE'));
-const waitingForTreasure = preferences => preferences?.onlyTenThousand === false
-  ? '当前没有可读取的货轮，保持等待' : '当前没有可读取的万吨货轮，保持等待，不抢小型或中型货轮';
+// 没有传入设置的底层调用沿用仅参加万吨的行为；显式空选会停止常规参与。
+const normalQualities = preferences => preferences?.qualities ?? ['ORANGE'];
+const waitingForTreasure = preferences => normalQualities(preferences).length
+  ? '当前没有所选类型的货轮，保持等待' : '未勾选常规货轮类型，暂停普通派遣和跟随';
 
 function fallbackState(snapshot, preferences) {
   const targetRewards = Math.min(preferences?.fallbackTargetRewards ?? 3, snapshot.rewardLimit);
@@ -177,17 +177,18 @@ export async function readTreasureLoot(client, protocol, config, player, { targe
     moveStartTs: fleet.moveStartTs, moveEndTs: fleet.moveEndTs, targetGridIdx: fleet.targetGridIdx,
     ownerPlayerId: fleet.owner ? exactAutomationId(fleet.owner.playerId) : null }));
   snapshot.allUids = list.treasure.filter(target => integer(target.uid, 1, 2147483647)).map(target => target.uid);
-  const types = treasureTypes(protocol, config);
-  if (!types.some(type => preferences?.onlyTenThousand === false || type.quality === 'ORANGE')) {
-    snapshot.reason = preferences?.onlyTenThousand === false ? '当前协议或配置无法确认货轮类型' : '当前协议或配置无法确认万吨货轮类型'; return snapshot;
+  const fallback = fallbackState(snapshot, preferences);
+  const qualities = new Set(normalQualities(preferences));
+  if (fallback.active) for (const quality of preferences.fallbackQualities ?? []) qualities.add(quality);
+  const types = treasureTypes(protocol, config).filter(type => qualities.has(type.quality));
+  if (qualities.size && !types.length) {
+    snapshot.reason = '当前协议或配置无法确认所选货轮类型'; return snapshot;
   }
   const seen = new Set(), duplicates = new Set();
   for (const uid of snapshot.allUids) { if (seen.has(uid)) duplicates.add(uid); seen.add(uid); }
-  const fallback = fallbackState(snapshot, preferences);
   // 同名响应不含请求uid，逐艘查询，避免并发串配参与者。
   for (const target of list.treasure) {
-    const type = allowedTreasureType(target, types, preferences) || types.find(type =>
-      fallback.active && type.color === target.color && preferences.fallbackQualities?.includes(type.quality));
+    const type = types.find(type => type.color === target.color);
     if (!type || (targetUid !== null && target.uid !== targetUid)) continue;
     const item = { uid: target.uid, color: target.color, quality: type.quality, name: type.name, ownerGuildIdx: target.ownerGuildIdx, progress: target.progress,
       ownerFleetNum: target.ownerFleetNum,gridIdx:target.gridIdx,
@@ -329,24 +330,26 @@ export function planTreasureLoot(snapshot, config, settings, { usage = { counter
     if (!reason && [...target.defenders, ...target.fighters].some(member => !member.isNpc && target.rank.some(row =>
       (p.avoidPlayerIds ?? []).includes(row.playerId) && row.name === member.name && (member.guildIdx == null || row.guildIdx === member.guildIdx)))) reason = '当前守军或战斗者命中所选避战玩家';
     let normalReason = reason;
-    if (!normalReason && p.onlyTenThousand !== false && target.quality !== 'ORANGE') normalReason = '已开启只抢万吨货轮，跳过此货轮并等待';
-    if (!normalReason && !matchesTreasureRewards(config, p.rewardItems, target.reward)) normalReason = '奖励不在所选范围';
+    if (!normalReason && !normalQualities(p).includes(target.quality)) normalReason = '未勾选此类型的常规货轮';
+    if (!normalReason && !matchesTreasureRewards(config, p.rewardItems, target.reward)) normalReason = '未命中任一普通目标奖励';
     const normalSpeedAllowed = !normalReason;
     const repeatFollow = p.fleetIds.some(id => repeatFollowRecord(keys, snapshot, target, snapshot.fleets.find(fleet => fleet.buildingId === id), p));
     if (!normalReason && !follow && !repeatFollow && (p.follow || !p.autoJoin)) normalReason = '未匹配指定跟随玩家的已出发舰队或当前守军，等待目标，不参加其他货轮';
-    const rewardPriority = (target.quality === 'PURPLE' ? p.fallbackMediumRewardPriority : p.fallbackSmallRewardPriority) ?? [];
-    const fallbackAllowed = !reason && fallback.active && p.fallbackQualities?.includes(target.quality) &&
-      matchesTreasureRewards(config, rewardPriority, target.reward);
+    const fallbackEligible = !reason && fallback.active && p.fallbackQualities?.includes(target.quality);
+    const fallbackPriority = fallbackEligible ? treasureRewardPriority(config,
+      target.quality === 'PURPLE' ? p.fallbackMediumRewardPriority : p.fallbackSmallRewardPriority, target.reward) : -1;
+    const fallbackAllowed = fallbackPriority >= 0;
     if (normalSpeedAllowed || fallbackAllowed) speedTargets.add(target.uid);
     const reward = (target.reward ?? []).slice(0, 3).map(asset => displayMaterial(config, asset.id)).join('、');
     const label = `${target.name || '货轮'}（${reward || '奖励未确认'}，进度 ${target.progress ?? '?'}%）`;
     reason = fallbackAllowed ? '' : normalReason;
+    if (reason && fallbackEligible) reason += '；未命中任一兜底目标奖励';
     plan.targets.push({ label, reason, followName: follow?.name ?? null,followPhase:follow?.phase??null, personalProgress: target.personalProgress, personalProgressLimit: p.personalProgressLimit });
     if (reason) plan.notes.push(label + '：' + reason);
     if (!normalReason) candidates.push({ target, follow, label, isFallback: false, qualityPriority: 0, rewardPriority: 0 });
     if (fallbackAllowed) candidates.push({ target, follow: null, label, isFallback: true,
       qualityPriority: p.fallbackQualities.indexOf(target.quality),
-      rewardPriority: rewardPriority.length ? rewardPriority.findIndex(id => matchesTreasureRewards(config, [id], target.reward)) : 0 });
+      rewardPriority: fallbackPriority });
   }
   candidates.sort((a, b) => Number(a.isFallback) - Number(b.isFallback) || a.qualityPriority - b.qualityPriority ||
     a.rewardPriority - b.rewardPriority || (a.follow?.priority ?? Infinity) - (b.follow?.priority ?? Infinity) || a.target.progress - b.target.progress || a.target.uid - b.target.uid);
@@ -679,16 +682,17 @@ export async function serviceTreasureLoot(client, config, { player, protocol, ge
     if (!Array.isArray(treasures)) throw new Error('未能读取宝藏列表');
     const types = treasureTypes(protocol, config);
     const preferences = getSettings()?.treasure;
-    const target = pickTreasure(treasures.filter(row => allowedTreasureType(row, types, preferences)), guildId % 1000, session.refused, now);
+    const allowsType = (row, prefs) => types.some(type => type.color === row.color && normalQualities(prefs).includes(type.quality));
+    const target = pickTreasure(treasures.filter(row => allowsType(row, preferences)), guildId % 1000, session.refused, now);
     if (!target) { later(300); return skip(waitingForTreasure(preferences) + '（仅考虑无主或本盟目标）'); }
     const fleet = pickTreasureFleet(fleets, client);
     if (!fleet) { later(300); return skip('没有空闲且耐久不低于 80% 的舰队'); }
     if (!enabled()) return;
-    // 旧入口也复读原目标并检查最新开关；目标变化时等待，不降级换抢其他货轮。
+    // 旧入口也复读原目标并检查最新勾选的类型。
     const freshTargets = (await client.request('TreasureLootListRequest', {}, 'TreasureLootListResponse'))?.treasure;
     if (!Array.isArray(freshTargets)) throw new Error('出征前未能确认货轮列表');
     const matches = freshTargets.filter(row => row.uid === target.uid);
-    if (matches.length !== 1 || !allowedTreasureType(matches[0], types, getSettings()?.treasure) ||
+    if (matches.length !== 1 || !allowsType(matches[0], getSettings()?.treasure) ||
         !pickTreasure(matches, guildId % 1000, session.refused, now)) {
       later(300); return skip('出征前货轮类型、归属或筛选条件已变化，保持等待');
     }

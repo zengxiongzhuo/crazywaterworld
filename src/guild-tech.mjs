@@ -38,7 +38,7 @@ export function guildTechView(config,{season,stage,tech,items}){
   else if(current.preTech>0&&(levels.get(current.preTech)??0)<current.preTechLevel)reason='需'+(definitions.find(r=>r.techId===current.preTech)?.name||'前置科技')+' '+current.preTechLevel+'级';
   else if(balance.value===null)reason='科技点未同步';
   else if(balance.value<cost)reason=balance.name+'不足';
-  return{id:cfg.techId,name:cfg.name,type:cfg.type,group:cfg.group,level,maxLevel,totalMax,effect:effectText(config,cfg,level),nextEffect:level<totalMax?effectText(config,cfg,level+1):null,cost,itemId,itemName:balance.name,reason,canUpgrade:!reason};
+  return{id:cfg.techId,name:cfg.name,type:cfg.type,group:cfg.group,level,maxLevel,totalMax,effect:effectText(config,cfg,level),nextEffect:level<totalMax?effectText(config,cfg,level+1):null,cost,costGrowth:cfg.techPointCostGrowth,itemId,itemName:balance.name,reason,canUpgrade:!reason};
  });
  return{season,stage,balances,rows:result,learned:result.filter(r=>r.level>0).length,total:result.length,totalLevels:result.reduce((sum,r)=>sum+r.level,0)};
 }
@@ -65,13 +65,15 @@ export async function readGuildTech(client,config,player,{ledger}={}){
  return{state:'member',identity:who,...view,pending};
 }
 
-export async function upgradeGuildTech(client,config,player,{techId,expectedLevel,maxCost,enabled=()=>true,ledger,counters={},limits={}}={}){
+export async function upgradeGuildTech(client,config,player,{techId,expectedLevel,maxCost,expectedIdentity,enabled=()=>true,ledger,counters={},limits={}}={}){
  if(!valid(techId)||techId<1||!valid(expectedLevel)||!valid(maxCost)||maxCost<1)throw Error('升级参数无效，请刷新科技列表');
  if(!ledger)throw Error('升级记录不可用，未执行');
  if(!enabled()||active.has(client))throw Error('账号已暂停或科技升级正在进行');
  active.add(client);
  try{
-  const who=identity(player),view=await readGuildTech(client,config,player,{ledger}),row=view.rows.find(r=>r.id===techId);
+  const who=identity(player);
+  if(expectedIdentity!==undefined&&expectedIdentity!==who)throw Error('角色、联盟或赛季已变化，请重新确认升级');
+  const view=await readGuildTech(client,config,player,{ledger}),row=view.rows.find(r=>r.id===techId);
   if(!row||view.state!=='member')throw Error(view.reason||'当前赛季没有该科技');
   if(row.level!==expectedLevel)throw Error('科技等级已变化，请刷新后再升级');
   if(!row.canUpgrade)throw Error(row.reason);

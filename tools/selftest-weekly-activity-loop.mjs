@@ -191,7 +191,7 @@ try {
     assert(f.calls.includes('GuildOrderRequest'), '北京时间12点仍应进入活动募兵检查');
     assert(f.calls.includes('DailyTaskInfoRequest'), '种田活动不应关闭日常用券招募');
     assert.deepEqual(f.writes, [['RecruitStartRequest', { way: 2 }]]);
-    assert(f.reports.some(entry => entry.taskKey === 'weeklyActivity' && /没有联盟订单/.test(entry.reason ?? '')));
+    assert(f.reports.some(entry => entry.taskKey === 'weeklyActivity' && entry.reason === '当前没有可提交的联盟募兵物资需求'));
   });
 
   await test('只启用周活动即可进入真实 runner，即使所有原生任务 callback 均返回 false', async () => {

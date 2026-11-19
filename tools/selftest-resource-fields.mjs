@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createUsageLedger, defaultSettings, validateSettings } from '../src/automation-settings.mjs';
-import { readResourceFieldState, previewResourceField, runResourceFieldShortcut, runResourceFields,
+import { readResourceFieldState, previewResourceField, previewResourceFieldPlan, runResourceFieldShortcut, runResourceFields,
   previewResourceFieldGiveUp, runResourceFieldGiveUp } from '../src/resource-field-automation.mjs';
 import { fleetRecordReason, reserveDispatch } from '../src/fleet-availability.mjs';
 import { checkFleetSettlement, settleFleetSnapshot, outstandingFleets } from '../src/fleet-settlement.mjs';
@@ -17,13 +17,14 @@ const setup = () => {
   const file = path.join(directory, String(++sequence) + '.json');
   const createLedger = () => createUsageLedger('虚构资源田账号', { file, now: () => Date.now() + f.client.serverClockOffsetMs });
   const ledger = createLedger(), options = { getSettings: () => settings, ledger, mapLoader: f.mapLoader, enabled: () => true };
-  return { f, settings, ledger, options, createLedger };
+  return { f, settings, ledger, options, createLedger, file };
 };
 const read = ({ f, options }) => readResourceFieldState(f.client, f.protocol, f.config, f.player, options);
 const preview = ({ f, options }, gridIdx = 10) => previewResourceField(f.client, f.protocol, f.config, f.player, { gridIdx }, options);
 const send = ({ f, options }, p, id = '1远征船') => runResourceFieldShortcut(f.client, f.protocol, f.config, f.player, p, id, options);
 const run = ({ f, options }) => runResourceFields(f.client, f.protocol, f.config, f.player, options);
-const automatic = test => Object.assign(test.settings.resourceFields, { enabled: true, fleetIds: ['1远征船'], preferredResource: '汽油', minLevel: 1, minDurabilityPercent: 50, reserveFleetCount: 0 });
+const automatic = test => Object.assign(test.settings.resourceFields, { enabled: true, fleetIds: ['1远征船'], allocationMode: 'ratio',
+  ratios: { fuel: 1, seeds: 0, tech: 0 }, minLevel: 1, minDurabilityPercent: 50, reserveFleetCount: 0 });
 const replacing = () => {
   const t = setup(); t.f.state.maxNum = 1; t.f.state.fields = [{ gridIdx: 20, cityId: 2, type: 3 }]; return t;
 };
@@ -134,9 +135,9 @@ try {
     t.f.state.cities[0].guildIdx = 7; t.f.config.tables.WorldParamCfg.data[0].paramValue = 301;
     await assert.rejects(() => send(t, p), /变化/); assert.equal(t.f.client.writes.length, 0);
   });
-  await test('关闭自动化不派遣，开启后优先所选资源的高产田', async () => {
+  await test('关闭自动化不派遣，开启后按相对权重占领种子高等级田', async () => {
     const t = setup(); await run(t); assert.equal(t.f.client.writes.length, 0);
-    automatic(t); t.settings.resourceFields.preferredResource = '种子'; await run(t);
+    automatic(t).ratios = { fuel: 0, seeds: 2, tech: 0 }; await run(t);
     assert.equal(t.f.client.writes[0].body.resFieldGridIdx, 11); assert.equal(t.f.client.writes.length, 1);
   });
   await test('自动策略遵守战力、耐久、最低等级和闲置舰队保留', async () => {
@@ -144,6 +145,159 @@ try {
       t => { t.settings.resourceFields.minLevel = 9; }, t => { t.settings.resourceFields.reserveFleetCount = 3; }]) {
       const t = setup(); automatic(t); change(t); await run(t); assert.equal(t.f.client.writes.length, 0);
     }
+  });
+  await test('关闭失守补位仍可首次占田，旧田消失后只预留对应类型的一个名额', async () => {
+    const t = setup(), state = t.f.state;
+    const policy = Object.assign(automatic(t), { refillAfterLoss: false, allocationMode: 'quota', quotas: { fuel: 2, seeds: 0, tech: 0 } });
+    t.f.occupyImmediately = true;
+    await run(t); await run(t); await run(t);
+    assert.deepEqual(state.fields.map(field => field.gridIdx), [10, 20]);
+
+    // 模拟重启后首次发现失守；额外开放的汽油田允许核对按名额抑制而非按格子绕过。
+    t.options.ledger = t.createLedger();
+    state.fields = state.fields.filter(field => field.gridIdx !== 20);
+    state.mapFields.push({ gridIdx: 23, cityId: 2, resType: 3 }, { gridIdx: 24, cityId: 2, resType: 3 });
+    t.f.beforeRead = name => name === 'RadarInfoRequest' ? { radarInfo: { events: [{ gridIdx: 20 }] } } : undefined;
+    await run(t);
+    assert.equal(t.f.client.writes.length, 2, '同类型其他空田不能填补已失守的那一个名额');
+    t.options.ledger = t.createLedger();
+    t.f.client.serverClockOffsetMs += 86400000;
+    await run(t);
+    assert.equal(t.f.client.writes.length, 2, '跨日重新打开账本仍记得失守');
+
+    Object.assign(policy.quotas, { fuel: 3, seeds: 1 });
+    await run(t); await run(t); await run(t);
+    assert.deepEqual(state.fields.map(field => field.type).sort(), [2, 3, 3], '新增一个汽油配额与种子配额都可使用');
+    assert.equal(t.f.client.writes.length, 4);
+    policy.refillAfterLoss = true;
+    await run(t); await run(t);
+    assert.deepEqual(state.fields.map(field => field.type).sort(), [2, 3, 3, 3]);
+    assert.equal(t.f.client.writes.length, 5);
+    policy.refillAfterLoss = false;
+    policy.quotas.fuel = 4;
+    state.mapFields.push({ gridIdx: 25, cityId: 2, resType: 3 });
+    await run(t);
+    assert.equal(state.fields.filter(field => field.type === 3).length, 4, '再次关闭后不会沿用已补齐的旧缺口');
+  });
+  await test('城市失守且原田仍在列表时可独立关闭或开启替换', async () => {
+    for (const refillAfterLoss of [false, true]) {
+      const t = setup(), state = t.f.state;
+      Object.assign(automatic(t), { refillAfterLoss });
+      state.maxNum = 1;
+      state.fields = [{ gridIdx: 10, cityId: 1, type: 3 }];
+      t.f.occupyImmediately = true;
+      await run(t);
+      state.cities.find(city => city.id === 1).guildIdx = 8;
+      await run(t); await run(t);
+      const writes = t.f.client.writes.map(({ name, body }) => [name, body.resFieldGridIdx]);
+      assert.deepEqual(writes, refillAfterLoss ? [['GiveUpResFieldRequest', 10], ['ChallengeResFieldRequest', 20]] : []);
+      assert.deepEqual(state.fields.map(field => field.gridIdx), [refillAfterLoss ? 20 : 10]);
+      if (!refillAfterLoss) {
+        state.maxNum = 2;
+        await run(t);
+        assert.deepEqual(state.fields.map(field => field.gridIdx), [10, 20], '失效田仍占一个位置，新增名额可以使用');
+        state.fields = state.fields.filter(field => field.gridIdx !== 10);
+        state.mapFields.push({ gridIdx: 23, cityId: 2, resType: 3 });
+        await run(t);
+        assert.deepEqual(state.fields.map(field => field.gridIdx), [20], '原田从列表移除后，继续保留其失守名额');
+        state.maxNum = 3;
+        await run(t);
+        assert.deepEqual(state.fields.map(field => field.gridIdx), [20, 23], '同一块田从失效到移除只计一次');
+      }
+    }
+  });
+  await test('失守的同一格重新出现在本人列表后恢复该类型的正常名额', async () => {
+    const t = setup(), state = t.f.state;
+    const policy = Object.assign(automatic(t), { refillAfterLoss: false, allocationMode: 'quota', quotas: { fuel: 1, seeds: 0, tech: 0 } });
+    const original = { gridIdx: 10, cityId: 1, type: 3 };
+    state.fields = [original];
+    await run(t); state.fields = []; await run(t);
+    assert.equal(t.f.client.writes.length, 0);
+    state.fields = [original];
+    policy.quotas.fuel = 2;
+    await run(t);
+    assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [20]);
+  });
+  await test('当天已占领并归队后失守，开启补位的只读预览和实际派遣都选原高级田', async () => {
+    const t = setup(), policy = automatic(t);
+    policy.refillAfterLoss = false; t.f.state.maxNum = 1;
+    await run(t); t.f.finish(10, true); await run(t);
+    assert.deepEqual(t.f.state.fields.map(field => field.gridIdx), [10]);
+    assert.equal(t.ledger.confirmedCounters().resourceFieldPetrol, 300);
+    t.f.state.fields = [];
+    await run(t);
+    assert.equal(t.f.client.writes.length, 1);
+    policy.refillAfterLoss = true;
+    const before = fs.readFileSync(t.file);
+    const p = await previewResourceFieldPlan(t.f.client, t.f.protocol, t.f.config, t.f.player, t.options);
+    assert.deepEqual(fs.readFileSync(t.file), before, '预览不清理或改写已结算记录与失守记录');
+    assert.equal(p.actions.length, 1); assert.match(p.actions[0].label, /（10）/);
+    assert.equal(t.f.client.writes.length, 1);
+    await run(t); await run(t);
+    assert.deepEqual(t.f.client.writes.map(write => [write.name, write.body.resFieldGridIdx]),
+      [['ChallengeResFieldRequest', 10], ['ChallengeResFieldRequest', 10]]);
+    t.f.finish(10, true); await run(t);
+    assert.equal(t.f.client.writes.length, 2);
+    assert.equal(t.ledger.confirmedCounters().resourceFieldPetrol, 600);
+    assert.equal(t.f.state.fuel, 5400);
+  });
+  await test('两块同类田失效且配额降到一块时只换回一块有效田', async () => {
+    const t = setup(), state = t.f.state;
+    const policy = Object.assign(automatic(t), { refillAfterLoss: true, allocationMode: 'quota', quotas: { fuel: 2, seeds: 0, tech: 0 } });
+    state.maxNum = 2; state.fuel = 0;
+    state.mapFields.push({ gridIdx: 23, cityId: 2, resType: 3 }, { gridIdx: 13, cityId: 1, resType: 3 });
+    state.fields = [20, 23].map(gridIdx => ({ gridIdx, cityId: 2, type: 3 }));
+    t.f.occupyImmediately = true;
+    await run(t);
+    state.cities.find(city => city.id === 2).guildIdx = 8;
+    policy.quotas.fuel = 1; state.fuel = 6000;
+    await run(t); await run(t); await run(t);
+    assert.deepEqual(t.f.client.writes.map(write => write.name), ['GiveUpResFieldRequest', 'ChallengeResFieldRequest']);
+    assert.equal(state.fields.filter(field => field.cityId === 1).length, 1);
+    assert.equal(state.fields.filter(field => field.cityId === 2).length, 1);
+  });
+  await test('原有空位或新增配额可用时，关闭补位会跳过等级最高的失守旧格', async () => {
+    for (const initialQuota of [1, 2]) {
+      const t = setup(), state = t.f.state;
+      const policy = Object.assign(automatic(t), { refillAfterLoss: false, allocationMode: 'quota', quotas: { fuel: initialQuota, seeds: 0, tech: 0 } });
+      state.fields = [{ gridIdx: 10, cityId: 1, type: 3 }];
+      state.fuel = 0; t.f.occupyImmediately = true;
+      await run(t);
+      state.fields = [];
+      state.fuel = 6000;
+      await run(t);
+      policy.quotas.fuel = 2;
+      await run(t); await run(t); await run(t);
+      assert.deepEqual(t.f.client.writes.map(w => [w.name, w.body.resFieldGridIdx]), [['ChallengeResFieldRequest', 20]]);
+      assert.deepEqual(state.fields.map(field => field.gridIdx), [20]);
+      policy.refillAfterLoss = true;
+      await run(t);
+      assert.deepEqual(state.fields.map(field => field.gridIdx), [20, 10]);
+    }
+  });
+  await test('主动放弃已记录的田不计入失守，关闭失守补位也可继续按目标派遣', async () => {
+    const t = setup();
+    Object.assign(automatic(t), { refillAfterLoss: false });
+    t.f.state.maxNum = 1; t.f.state.fields = [{ gridIdx: 10, cityId: 1, type: 3 }];
+    await run(t);
+    const result = await giveUp(t, await giveUpPreview(t, 10));
+    assert.equal(result.status, 'confirmed');
+    await run(t);
+    assert.deepEqual(t.f.client.writes.map(write => write.name), ['GiveUpResFieldRequest', 'ChallengeResFieldRequest']);
+  });
+  await test('没有参与舰队时预览仍显示依据实际容量与比例算出的三个目标', async () => {
+    const t = setup();
+    Object.assign(automatic(t), { ratios: { fuel: 0, seeds: 1, tech: 3 }, fleetIds: [] });
+    const p = await previewResourceFieldPlan(t.f.client, t.f.protocol, t.f.config, t.f.player, t.options);
+    assert.equal(p.actions.length, 0); assert(p.notes.some(line => /上限 5 块.*汽油 0 块、种子 1 块、科技点 4 块/.test(line)));
+  });
+  await test('多轮按相对比例填满实际名额，零权重跳过、余下名额归高权重', async () => {
+    const t = setup(); automatic(t).ratios = { fuel: 0, seeds: 1, tech: 2 };
+    t.f.state.maxNum = 4; t.f.occupyImmediately = true;
+    t.f.state.mapFields.push({ gridIdx: 23, cityId: 2, resType: 1 });
+    for (let i = 0; i < 5; i++) await run(t);
+    assert.deepEqual(t.f.state.fields.map(f => f.type).sort(), [1, 1, 1, 2]);
+    assert.equal(t.f.client.writes.length, 4);
   });
   await test('出征后归队未占领时暂停当日自动化，不能换格无限撞守军', async () => {
     const t = setup(); automatic(t); await run(t); t.f.finish(10, false);
@@ -255,11 +409,65 @@ try {
     assert((await replacePreview(t)).fleets.every(row => !row.available));
     assert.equal(t.f.client.writes.length, 0);
   });
-  await test('自动化永不执行替换，确认中的旧田也不能被客户端换掉', async () => {
+  await test('自动升级替换已满的低级田，手动确认中的旧田不能被客户端换掉', async () => {
     const t = replacing(), p = await replacePreview(t); automatic(t);
-    await assert.rejects(() => send({ ...t, options: { ...t.options, automatic: true } }, p), /不允许替换/);
     await assert.rejects(() => send(t, { ...p, replaceGridIdx: 21 }), /失效/);
+    const planned = await previewResourceFieldPlan(t.f.client, t.f.protocol, t.f.config, t.f.player, t.options);
+    assert.match(planned.actions[0].label, /替换旧田 20/); assert.equal(t.f.client.writes.length, 0);
+    assert.equal((await run(t))[0].status, 'confirmed');
+    assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [20, 10]);
+    t.f.finish(10, true); await run(t); assert.equal(t.f.client.writes.length, 2);
+  });
+  await test('种子不足时按配额替换超额汽油，同级汽油也能换种子', async () => {
+    const t = replacing(); t.f.state.fields = [{ gridIdx: 10, cityId: 1, type: 3 }];
+    Object.assign(automatic(t), { allocationMode: 'quota', quotas: { fuel: 0, seeds: 1, tech: 0 } });
+    await run(t); assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [10, 11]);
+    t.f.finish(11, true); await run(t); assert.equal(t.f.client.writes.length, 2);
+  });
+  await test('在途计入固定配额；旧账本只留格子、所属城市易主也不多派', async () => {
+    const t = setup();
+    Object.assign(automatic(t), { fleetIds: ['1远征船','2远征船'], allocationMode: 'quota', quotas: { fuel: 1, seeds: 0, tech: 0 } });
+    await run(t);
+    const key = 'resource-field:1001001:10', { resourceId, ...details } = t.ledger.keyRecords()[key].details;
+    assert.equal(resourceId, '汽油'); t.ledger.updateKeyDetails(key, details);
+    t.f.state.cities[0].guildIdx = 8;
+    await run(t); assert.equal(t.f.client.writes.length, 1);
+  });
+  await test('高等级田超出舰队战力时占下一级，战力不足以升级时保留旧田', async () => {
+    const t = setup(); automatic(t).refillAfterLoss = false; t.f.state.maxNum = 1;
+    t.f.config.tables['1_ResFieldTypeCfg'].data.find(r => r.type === 3 && r.level === 1).suggestPower = 300000;
+    await run(t); assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [20]);
+    t.f.finish(20, true); await run(t); assert.equal(t.f.client.writes.length, 1);
+    t.f.state.fleets[0].power = 350000; await run(t);
+    assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [20, 20, 10]);
+  });
+  await test('固定配额达标时即使有空位也保持数量，只替换更低级的同类田', async () => {
+    const t = replacing(); t.f.state.maxNum = 5;
+    Object.assign(automatic(t), { allocationMode: 'quota', quotas: { fuel: 1, seeds: 0, tech: 0 } });
+    await run(t); t.f.finish(10, true); await run(t);
+    assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [20, 10]);
+    assert.equal(t.f.state.fields.length, 1);
+  });
+  await test('配额超过总容量且无多占类型时不为其他类型来回换田，同级也不换', async () => {
+    const t = replacing(); t.f.state.fields = [{ gridIdx: 10, cityId: 1, type: 3 }];
+    t.f.state.mapFields.push({ gridIdx: 13, cityId: 1, resType: 3 });
+    Object.assign(automatic(t), { allocationMode: 'quota', quotas: { fuel: 1, seeds: 1, tech: 0 } });
     await run(t); assert.equal(t.f.client.writes.length, 0);
+  });
+  await test('自动替换放弃前重读，守军或耐久不再符合时保留旧田', async () => {
+    const t = replacing(); automatic(t); let reads = 0;
+    t.f.beforeRead = name => {
+      if (name === 'MyResFieldsRequest' && ++reads === 3) t.f.state.fleets[0].durability = 1;
+    };
+    assert.equal((await run(t))[0].status, 'cancelled');
+    assert.equal(t.f.client.writes.length, 0); assert.equal(t.f.state.fields[0].gridIdx, 20);
+  });
+  await test('自动替换确认旧田已放弃后再次检查配额，新田已达标不继续派遣', async () => {
+    const t = replacing(); t.f.state.maxNum = 3;
+    Object.assign(automatic(t), { allocationMode: 'quota', quotas: { fuel: 1, seeds: 0, tech: 0 } });
+    t.f.afterWrite = name => { if (name === 'GiveUpResFieldRequest') t.f.state.fields.push({ gridIdx: 31, cityId: 2, type: 3 }); };
+    const result = (await run(t))[0]; assert.equal(result.status, 'cancelled'); assert.equal(result.released, true);
+    assert.deepEqual(t.f.client.writes.map(w => w.body.resFieldGridIdx), [20]);
   });
   await test('替换前实时阻止归属、舰队、汽油与新旧收益恶化，旧田完整保留', async () => {
     for (const change of [
@@ -421,7 +629,7 @@ try {
   await test('单个放弃仅本人当前格，自动化调用及旧田身份变化均零写入', async () => {
     const t = replacing(); assert.equal((await giveUpPreview(t, 10)).available, false);
     const p = await giveUpPreview(t);
-    await assert.rejects(() => giveUp({ ...t, options: { ...t.options, automatic: true } }, p), /不允许放弃/);
+    await assert.rejects(() => giveUp({ ...t, options: { ...t.options, automatic: true } }, p), /只在替换时放弃/);
     t.f.state.fields[0].type = 2;
     await assert.rejects(() => giveUp(t, p), /类型已变化/); assert.equal(t.f.client.writes.length, 0);
   });

@@ -35,6 +35,36 @@ function fixture() {
   return f;
 }
 
+function newSeasonRecruitFixture({ doneToday = 0, dailyLimit = 0, stock = 20 } = {}) {
+  const f = fixture(), now = Math.floor(Date.now() / 1000);
+  f.player.worldId = '2010000402';
+  Object.assign(f.settings.alliance, { recruit: true, recruitProduction: true, recruitDailyLimit: dailyLimit, autoAsk: true, askDailyLimit: 1 });
+  Object.assign(f.config.tables, {
+    GuildOrderNumCfg: { data: [{ season: 1, playerLevel: 1, maxNum: -1 }, { season: 7, playerLevel: 1, maxNum: 2 }] },
+    GuildOrderCfg: { data: [{ itemId: '木材' }] },
+  });
+  f.state.stock.木材 = stock; f.state.recruitCount = doneToday;
+  const request = f.client.request;
+  f.client.request = async (name, body, response) => {
+    if (name === 'GuildOrderRequest') return { order: { requirements: [{ type: 0, id: '木材', num: 2 }], nextRefreshTime: now + 86400 } };
+    if (name === 'GuildCityInfoRequest') return { cities: [{ cityId: 1, recommended: true }] };
+    if (name === 'CounterInfoRequest') {
+      const reply = await request(name, body, response);
+      return { ...reply, counters: [...reply.counters, { type: 'DAILY_FINISH_GUILD_ORDER', num: f.state.recruitCount }] };
+    }
+    if (name === 'FinishGuildOrderRequest') {
+      f.protocol[name].decode(f.protocol[name].encode(body).finish());
+      f.state.writes.push({ name, body: structuredClone(body) });
+      f.state.stock.木材 -= 2; f.state.recruitCount++;
+      return { reward: { asset: [{ type: 1, id: '功勋', num: 10 }] } };
+    }
+    return request(name, body, response);
+  };
+  f.recruits = () => f.state.writes.filter(row => row.name === 'FinishGuildOrderRequest');
+  f.demand = () => readAllianceRecruitDemand(f.client, f.protocol, f.config, f.player, f.settings, { ledger: f.ledger });
+  return f;
+}
+
 try {
   await test('总开关关闭无游戏读取，分项关闭仍领取已有援助', async () => {
     const f = fixture(); f.settings.alliance.enabled = false; await f.run(); assert.equal(f.state.reads.length, 0);
@@ -223,8 +253,40 @@ try {
     s.alliance.recruitDailyLimit = 0; assert.equal(allianceRecruitDemand(view, s).length, 1);
     assert.deepEqual(allianceRecruitDemand({ ...view, nextRefreshTime: 50 }, s), []);
   });
-  await test('联盟募兵未知请求在重建账本后阻止写入和备料，服务端计数可核销', async () => {
+  await test('S10缺少专属配置时自动募兵、备料和默认缺料求助共用旧赛季额度', async () => {
+    const ready = newSeasonRecruitFixture();
+    await ready.run();
+    assert.deepEqual(ready.recruits().map(row => row.body), [{ cityId: 1 }]);
+    assert.equal(ready.ledger.snapshot().counters.guildRecruit, 1);
+    assert.equal(ready.asks().length, 0, '材料充足时不因募兵产生求助');
+    assert.ok(ready.reports.every(row => !row.error));
+
+    const missing = newSeasonRecruitFixture({ stock: 0 });
+    assert.deepEqual(await missing.demand(), [{ source: 'guildRecruit', requirements: [{ id: '木材', num: 2 }], reserved: [{ id: '木材', num: 0 }] }]);
+    await missing.run();
+    assert.equal(missing.recruits().length, 0, '缺料时只备料和求助，不提交募兵');
+    assert.equal(missing.asks().length, 1);
+    assert.equal(missing.asks()[0].body.reqItemId, '木材', '未指定材料时沿用当前募兵缺料');
+    assert.ok(missing.reports.every(row => !row.error));
+  });
+  await test('S10回退额度仍限制自动募兵、备料和默认缺料求助', async () => {
+    for (const options of [{ doneToday: 2 }, { doneToday: 1, dailyLimit: 1 }]) {
+      const f = newSeasonRecruitFixture(options);
+      assert.deepEqual(await f.demand(), [], JSON.stringify(options));
+      await f.run();
+      assert.equal(f.recruits().length, 0, '材料充足也不能超出游戏或用户额度');
+      assert.ok(f.reports.some(row => /上限/.test(row.reason ?? '')));
+      f.state.stock.木材 = 0;
+      assert.deepEqual(await f.demand(), []);
+      await f.run();
+      assert.equal(f.asks().length, 0, '达到额度后不为下一次募兵求助');
+      assert.equal(f.recruits().length, 0);
+      assert.ok(f.reports.every(row => !row.error));
+    }
+  });
+  await test('S10联盟募兵未知请求在重建账本后阻止写入和备料，服务端计数可核销', async () => {
     const f = fixture(), now = Math.floor(Date.now() / 1000);
+    f.player.worldId = '2010000402';
     Object.assign(f.settings.alliance, { recruit: true, recruitProduction: true, mutual: false });
     Object.assign(f.config.tables, { GuildOrderNumCfg: { data: [{ season: 2, playerLevel: 1, maxNum: 10 }] }, GuildOrderCfg: { data: [{ itemId: '木材' }] } });
     let count = 0, writes = 0, unknown = true;

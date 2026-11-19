@@ -38,7 +38,7 @@ function fixture() {
     }
     return nodes.get(id);
   };
-  const buttons = ['alipay', 'phone', 'wechat', 'douyin'].map(channel => {
+  const buttons = ['alipay', 'phone', 'wechat', 'douyin', 'wechat-qr'].map(channel => {
     const button = env.node('choose-' + channel);
     button.dataset.loginChannel = channel;
     return button;
@@ -61,6 +61,7 @@ function fixture() {
     const $ = env.node, document = env.document;
     const resetAlipayLogin = () => env.clean('alipay');
     const resetPhoneLogin = () => env.clean('phone');
+    const resetWechatLogin = () => env.clean('wechat-qr');
     const resetAccountAddCapture = () => env.clean('capture');
     const refreshPhoneDevice = async () => { env.deviceReads++; };
     const pollCapture = async () => { env.captureReads++; };
@@ -92,13 +93,14 @@ await test('打开弹窗只显示渠道选择，首次渲染钩子不触发请�
 });
 
 await test('选中各渠道只显示对应入口，采集按钮按渠道呈现', async () => {
-  for (const channel of ['alipay', 'phone', 'wechat', 'douyin']) {
+  for (const channel of ['alipay', 'phone', 'wechat', 'douyin', 'wechat-qr']) {
     const env = fixture();
     env.open();
     env.choose(channel);
     assert.equal(env.channel(), channel);
     assert.equal(env.node('account-add-channels').hidden, true);
     assert.equal(env.node('account-add-alipay').hidden, channel !== 'alipay');
+    assert.equal(env.node('account-add-wechat').hidden, channel !== 'wechat-qr');
     assert.equal(env.node('account-add-phone').hidden, channel !== 'phone');
     assert.equal(env.node('account-add-capture').hidden, !['wechat', 'douyin'].includes(channel));
     assert.equal(env.node('cap-start').hidden, channel !== 'wechat');
@@ -109,6 +111,18 @@ await test('选中各渠道只显示对应入口，采集按钮按渠道呈现',
     env.choose(channel === 'phone' ? 'alipay' : 'phone');
     assert.equal(env.channel(), channel, '完成当前渠道清理后才可重新选择');
   }
+});
+
+await test('微信扫码与电脑微信采集入口独立，返回时清理正确会话', async () => {
+  const env = fixture(); env.open(); env.choose('wechat-qr');
+  assert.equal(env.node('account-add-wechat').hidden, false);
+  assert.equal(env.node('account-add-capture').hidden, true);
+  assert.equal(env.captureReads, 0);
+  env.changed('wechat-qr', 'captured');
+  assert.equal(env.node('account-add-step').textContent, '选择区服和角色');
+  await env.click('back'); assert.deepEqual(env.cleanup, ['wechat-qr']);
+  env.choose('wechat'); assert.equal(env.captureReads, 1);
+  assert.equal(env.node('account-add-capture').hidden, false);
 });
 
 await test('微信和抖音采集后显示验证清理步骤，清理成功后显示完成', async () => {

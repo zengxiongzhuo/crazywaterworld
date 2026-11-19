@@ -319,6 +319,7 @@ export async function runLoop(client, protocol, {
         const holdForOrders = canFactory('startProduce') || enabled('finishOrder') || checkUpgrade;
         let version = factorySchedule.version();
         const survey = await surveyWorld(client, protocol, { config, player,
+          includeProductionTiming: canFactory('startProduce') && currentSettings?.factory?.produce !== false,
           includeWeekOrder: holdForOrders || needsCargoDemand(currentSettings),
           includeCargo: (enabled('cargo') && holdForOrders) || needsCargoDemand(currentSettings) });
         // 募兵、上船和订单可能已改变需求，不能沿用主轮的备料快照。
@@ -647,17 +648,19 @@ export async function runLoop(client, protocol, {
         } catch (error) { phaseFailure('tasks', '任务检查', error); }
       }
       await checkFactoryDue({ checkpoint: true });
-      if (groupEnabled('日常')) {
+      // 详细设置下付费点金由基地计划独立执行，普通日常的进度与重置时间只属于免费点金。
+      const dailyKeys = settings ? { ...dailyActionKeys, 1006: ['freeGold'] } : dailyActionKeys;
+      if (Object.values(dailyKeys).some(keys => keys.some(enabled))) {
         try {
            const includeTask = id => id === 1010 && settings
-             ? false : !isEnabled || dailyActionKeys[id]?.some(enabled);
+             ? false : !isEnabled || dailyKeys[id]?.some(enabled);
           const survey = await surveyDailies(client, protocol, { config, player, includeTask, probeGift: !isEnabled, idle: !!isEnabled, settings });
-          for (const entry of survey.tasks) for (const key of dailyActionKeys[entry.task.id]??[]) rewards?.observe(key, entry.reason || (Number.isFinite(entry.task.progress)&&Number.isFinite(entry.task.targetProgress)?entry.task.progress+'/'+entry.task.targetProgress+(entry.task.progress>=entry.task.targetProgress?' · 今日目标已完成':' · 等待执行'):'已读取任务状态'));
+          for (const entry of survey.tasks) for (const key of dailyKeys[entry.task.id]??[]) rewards?.observe(key, entry.reason || (Number.isFinite(entry.task.progress)&&Number.isFinite(entry.task.targetProgress)?entry.task.progress+'/'+entry.task.targetProgress+(entry.task.progress>=entry.task.targetProgress?' · 今日目标已完成':' · 等待执行'):'已读取任务状态'));
            const recruit = survey.tasks.find(entry => entry.task.id === 1002 && entry.status === 'waiting');
            if (recruit && recruit.reason !== lastRecruitWait) stepLog('dailies')({ title: recruit.task.title, skipped: true, reason: recruit.reason, taskKey: 'freeRecruit' });
            lastRecruitWait = recruit?.reason;
            for (const entry of survey.tasks) {
-             const keys = dailyActionKeys[entry.task.id] ?? [];
+             const keys = dailyKeys[entry.task.id] ?? [];
              if (['waiting', 'blocked'].includes(entry.status) && entry.reason && keys.some(enabled)) {
                stepLog('dailies')({ title: entry.task.title, skipped: true, reason: entry.reason, taskKey: keys[0] });
              }
@@ -676,7 +679,7 @@ export async function runLoop(client, protocol, {
           if (rewards) {
             for (const { task } of survey.tasks) {
               if (!(task.targetProgress > 0 && task.progress >= task.targetProgress)) continue;
-              for (const key of dailyActionKeys[task.id] ?? []) rewards.defer(key, survey.daily.dailyResetTime);
+              for (const key of dailyKeys[task.id] ?? []) rewards.defer(key, survey.daily.dailyResetTime);
             }
             rewards.defer('freeRecruit', survey.freeRecruitAt);
             rewards.defer('freeGold', survey.freeGoldAt);
@@ -932,6 +935,7 @@ export async function runLoop(client, protocol, {
         const usesOrders = allowWorld('finishOrder') || allowWorld('denyOrder');
         const factoryReadVersion = factorySchedule.version();
         const survey = await surveyWorld(client, protocol, { config, player,
+          includeProductionTiming: allowWorld('startProduce') && settings?.factory?.produce !== false,
           includeCargo: needsCargoDemand(settings) || (!!isEnabled && enabled('cargo') && (allowWorld('startProduce') || usesOrders)),
           includeWeekOrder: needsCargoDemand(settings) || usesOrders || allowWorld('startProduce') || allowWorld('farm') || allowWorld('upgrade') });
         if (settings && ((allowWorld('startProduce') && (settings.factory.demandFirst || settings.alliance?.enabled &&
@@ -1059,7 +1063,7 @@ export async function runLoop(client, protocol, {
       const latest = getSettings();
       if (hasBaseWork(latest)) {
         try {
-          const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: false });
+          const survey = await surveyWorld(client, protocol, { config, player, includeWeekOrder: false, includeProductionTiming: false });
           const extra = await surveyBaseAutomation(client, protocol, config, player, latest, survey, { ledger: usageLedger, enabled: () => !stop.aborted && runtimeActive() && client.connected !== false });
           const plan = planBaseAutomation(extra, config, latest, usage(), { diveCompleted });
           observeBaseAutomationPlan(rewards, plan, latest, getEveryMs());

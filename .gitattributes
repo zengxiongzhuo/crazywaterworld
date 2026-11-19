@@ -1,3 +1,5 @@
 * text=auto eol=lf
+# Preserve CRLF in Git blobs so ZIP downloads also run correctly in cmd.exe.
+*.cmd -text whitespace=blank-at-eol,blank-at-eof,space-before-tab,cr-at-eol
 *.png binary
 *.bin binary

@@ -3,7 +3,7 @@ import { readOrderReservedStock, beginOrderMaterialSpend, cancelOrderMaterialSpe
 import { toNumber } from './client.mjs';
 
 const key = 'guildOrders';
-const label = '联盟订单';
+const label = '联盟募兵';
 const counterType = 'DAILY_FINISH_GUILD_ORDER';
 const busy = new WeakSet();
 // Keep unresolved writes across connections in this process. The request has no
@@ -52,22 +52,34 @@ function assets(value, name) {
 }
 
 function orderLimit(config, season, level) {
-  // Never borrow a more generous quota from another season.
-  const available = rows(config, 'GuildOrderNumCfg').filter(row => row.season === season && row.playerLevel <= level);
-  const best = available.sort((a, b) => b.playerLevel - a.playerLevel)[0];
-  if (!best || !Number.isSafeInteger(best.playerLevel) || best.playerLevel < 1
-    || !Number.isSafeInteger(best.maxNum) || best.maxNum < -1
-    || available.filter(row => row.playerLevel === best.playerLevel).length !== 1) throw new Error('缺少当前赛季和等级的联盟订单次数配置');
+  // The offline client's SeasonUtil.seasonCfgList falls back to the highest
+  // season that does not exceed the current one when the config pack has no
+  // rows for the current season yet (e.g. new S8+ servers on an old pack);
+  // PlayerUtil.levelCfg then picks the highest tier at or below the player
+  // level. Never borrow a quota from a season above the current one.
+  const all = rows(config, 'GuildOrderNumCfg');
+  const invalid = () => new Error('缺少或存在异常的联盟募兵次数配置');
+  if (!Array.isArray(all) || !all.length
+    || all.some(row => !Number.isSafeInteger(row?.season) || row.season < 1)) throw invalid();
+  const configSeason = all.reduce((best, row) => row.season <= season ? Math.max(best, row.season) : best, 0);
+  const available = all.filter(row => row.season === configSeason);
+  // A missing season may fall back; a malformed tier must not silently fall
+  // back to a different quota (possibly an unlimited one).
+  if (available.some(row => !Number.isSafeInteger(row.playerLevel) || row.playerLevel < 1
+    || !Number.isSafeInteger(row.maxNum) || row.maxNum < -1)
+    || new Set(available.map(row => row.playerLevel)).size !== available.length) throw invalid();
+  const best = available.sort((a, b) => b.playerLevel - a.playerLevel).find(row => row.playerLevel <= level);
+  if (!best) throw invalid();
   return best.maxNum;
 }
 
 function countOf(reply) {
-  const counters = list(reply?.counters, '联盟订单每日次数');
+  const counters = list(reply?.counters, '联盟募兵每日次数');
   const found = counters.filter(row => row?.type === counterType);
-  if (counters.some(row => typeof row?.type !== 'string' || !row.type) || found.length > 1) throw new Error('联盟订单次数记录异常');
+  if (counters.some(row => typeof row?.type !== 'string' || !row.type) || found.length > 1) throw new Error('联盟募兵次数记录异常');
   // Verified in the offline client: counterNum(type) returns zero when the
   // type is absent from a successfully received complete counters snapshot.
-  return found.length ? amount(found[0].num, '今日联盟订单次数') : 0;
+  return found.length ? amount(found[0].num, '今日联盟募兵次数') : 0;
 }
 
 async function request(client, protocol, name, enabled) {
@@ -99,10 +111,10 @@ export async function readGuildOrderView(client, protocol, config, { player, set
     request(client, protocol, 'CounterInfoRequest', enabled),
   ]);
   const order = orderReply?.order;
-  const requirements = assets(order?.requirements, '联盟订单材料');
-  const nextRefreshTime = amount(order?.nextRefreshTime, '联盟订单刷新时间', true);
+  const requirements = assets(order?.requirements, '联盟募兵材料');
+  const nextRefreshTime = amount(order?.nextRefreshTime, '联盟募兵刷新时间', true);
   const known = new Set(rows(config, 'GuildOrderCfg').map(row => row.itemId));
-  if ([...requirements.keys()].some(id => !known.has(id))) throw new Error('联盟订单包含未识别的材料配置');
+  if ([...requirements.keys()].some(id => !known.has(id))) throw new Error('联盟募兵包含未识别的材料配置');
   const cities = list(cityReply?.cities, '联盟城市').map(city => ({ cityId: amount(city?.cityId, '联盟城市编号', true), recommended: city.recommended === true }));
   if (new Set(cities.map(city => city.cityId)).size !== cities.length) throw new Error('联盟城市记录重复');
   const doneToday = countOf(counterReply);
@@ -111,10 +123,10 @@ export async function readGuildOrderView(client, protocol, config, { player, set
     identity: stamp, accountKey: accountKey(player), day: dayOf(now(client)),
     orderKey: JSON.stringify([nextRefreshTime, [...requirements].sort(([a], [b]) => a.localeCompare(b))]) });
   if (stamp !== identity(player) || !enabled()) throw new Error('账号或联盟状态已变化');
-  if (nextRefreshTime <= now(client)) return { ...view, reason: '联盟订单正在刷新，稍后重新检查' };
-  if (maxNum !== -1 && doneToday >= maxNum) return { ...view, reason: '今日联盟订单已交 ' + doneToday + ' 单，达到本赛季上限 ' + maxNum };
-  if (!requirements.size) return { ...view, reason: '当前没有联盟订单' };
-  if (!city) return { ...view, reason: '联盟当前没有可提交订单的城市' };
+  if (nextRefreshTime <= now(client)) return { ...view, reason: '联盟募兵正在刷新，稍后重新检查' };
+  if (maxNum !== -1 && doneToday >= maxNum) return { ...view, reason: '今日联盟募兵已完成 ' + doneToday + ' 次，达到本赛季上限 ' + maxNum };
+  if (!requirements.size) return { ...view, reason: '当前没有可提交的联盟募兵物资需求' };
+  if (!city) return { ...view, reason: '联盟当前没有可募兵的城市' };
   const { stock, reservations } = await readOrderReservedStock(client, protocol, config, { player, settings, enabled, itemIds:[...requirements.keys()] });
   if (stamp !== identity(player) || !enabled()) throw new Error('账号或联盟状态已变化');
   view.requirements = [...requirements].map(([id, need]) => {
@@ -137,7 +149,7 @@ export async function serviceGuildOrders(client, protocol, config, { player, get
   if (!enabled()) return skip('已暂停');
   if (!Number.isSafeInteger(dailyLimit) || dailyLimit < 0) return skip('联盟募兵每日上限无效');
   if (scheduler && !scheduler.due(key)) return skip('等待下次检查');
-  if (busy.has(client)) return skip('正在核对联盟订单');
+  if (busy.has(client)) return skip('正在核对联盟募兵');
   busy.add(client);
   try {
     await refreshOrderMaterialSpends(client,player,{enabled});
@@ -161,10 +173,10 @@ export async function serviceGuildOrders(client, protocol, config, { player, get
       if ((initial.day === saved.day && initial.doneToday > saved.doneToday) || (initial.day > saved.day && saved.confirmed)) {
         pending.delete(initial.accountKey);
         delay(60);
-        return skip('已重新核对上次联盟订单，下一轮继续');
+        return skip('已重新核对上次联盟募兵，下一轮继续');
       }
       delay(180);
-      return skip('上次联盟订单结果尚未确认，暂不重复提交；请在游戏中核对');
+      return skip('上次联盟募兵结果尚未确认，暂不重复提交；请在游戏中核对');
     }
     // Re-read all competing requirements and inventory, not only the order.
     const current = await readGuildOrderView(client, protocol, config, { player, settings: getSettings(), enabled });
@@ -175,7 +187,7 @@ export async function serviceGuildOrders(client, protocol, config, { player, get
     const guild = (await request(client, protocol, 'GuildInfoRequest', enabled))?.guild;
     if (!enabled() || identity(player) !== current.identity || idText(guild?.guildId) !== idText(player.guildId)) return skip('账号或联盟状态已变化');
     if (now(client) >= current.nextRefreshTime || dayOf(now(client)) !== current.day) return skip('订单已到刷新时间，下一轮重新核对');
-    if (!protocol.FinishGuildOrderRequest || !protocol.FinishGuildOrderResponse) throw new Error('本地协议缺少联盟订单提交');
+    if (!protocol.FinishGuildOrderRequest || !protocol.FinishGuildOrderResponse) throw new Error('本地协议缺少联盟募兵提交');
     const pendingOrder={ day: current.day, doneToday: current.doneToday, confirmed:false };
     const uniqueKey = 'allianceRecruit:' + idText(player.worldId) + ':' + idText(player.playerId) + ':' + current.day + ':' + current.doneToday;
     const ticket = ledger?.reserve({ guildRecruit: 1 }, dailyLimit > 0 ? { guildRecruit: dailyLimit } : {}, { guildRecruit: current.doneToday },
@@ -183,7 +195,7 @@ export async function serviceGuildOrders(client, protocol, config, { player, get
     if (!enabled()) { ledger?.cancel(ticket); return skip('已暂停，未发送募兵'); }
     let debit;
     try {
-    debit = beginOrderMaterialSpend(player, current.requirements, '联盟订单',{operation:{onConfirmed:()=>{pendingOrder.confirmed=true;},verify:async(next,{player:actor,enabled:active})=>{
+    debit = beginOrderMaterialSpend(player, current.requirements, '联盟募兵',{operation:{onConfirmed:()=>{pendingOrder.confirmed=true;},verify:async(next,{player:actor,enabled:active})=>{
       if(accountKey(actor)!==current.accountKey||dayOf(now(next))!==current.day||!active())return false;
       const reply=await request(next,protocol,'CounterInfoRequest',active);
       return active()&&accountKey(actor)===current.accountKey&&dayOf(now(next))===current.day&&countOf(reply)>current.doneToday;
@@ -203,21 +215,21 @@ export async function serviceGuildOrders(client, protocol, config, { player, get
         ledger?.cancel(ticket);
       }
       delay(180);
-      return finish({ ok: false, error: error.notSent === true ? '联盟订单未发送：' + error.message : refused ? '联盟订单被拒绝：' + error.message : '联盟订单结果未确认，已暂停重复提交：' + error.message });
+      return finish({ ok: false, error: error.notSent === true ? '联盟募兵未发送：' + error.message : refused ? '联盟募兵被拒绝：' + error.message : '联盟募兵结果未确认，已暂停重复提交：' + error.message });
     }
     const rewards = reply?.reward?.asset;
     const confirmed = Array.isArray(rewards) && rewards.length && rewards.every(item =>
       typeof item?.id === 'string' && item.id && [0, 1].includes(item.type) && Number.isSafeInteger(toNumber(item.num)) && toNumber(item.num) > 0);
     if (!confirmed) {
       delay(180);
-      return finish({ ok: false, error: '服务端未返回明确的联盟订单奖励，已暂停重复提交，请核对游戏记录' });
+      return finish({ ok: false, error: '服务端未返回明确的联盟募兵奖励，已暂停重复提交，请核对游戏记录' });
     }
     pendingOrder.confirmed=true;
     ledger?.confirm(ticket);
     confirmOrderMaterialOperation(debit);
     await refreshOrderMaterialSpends(client,player,{enabled});
     delay(60);
-    return finish({ ok: true, label: label + ' · 已提交 1 单，获得' + rewards.map(item => displayMaterial(config, item.id) + ' ×' + toNumber(item.num)).join('、') });
+    return finish({ ok: true, label: label + ' · 已完成 1 次，获得' + rewards.map(item => displayMaterial(config, item.id) + ' ×' + toNumber(item.num)).join('、') });
   } catch (error) {
     delay(180);
     if (!enabled()) return skip('账号已暂停或连接已更换');

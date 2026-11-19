@@ -119,7 +119,6 @@ export async function runFactoryProductionBatch(client, protocol, steps, {
     ensureLive();
     const snapshot = factoryProductionSnapshot(water, buildingId);
     if (!snapshot) throw new AutomationSkip('无法完整确认工厂队列和待收成品');
-    if (snapshot.building.buildStartTime > 0 || snapshot.building.buildFinishTime > 0) throw new AutomationSkip('工厂正在升级，等待重新排产');
     if (snapshot.building.factory.autoProductId && (water.autoProduceForever || water.autoProduceEndTime > clock(client))) throw new AutomationSkip('游戏自动生产已开启，保留原队列和目标');
     const slots = Number(rows(config, 'BuildingProduceParamCfg').find(row => row.paramName === '制造位上限')?.paramValue);
     if (!Number.isSafeInteger(slots) || slots < 1) throw new AutomationSkip('无法确认工厂制造位上限');

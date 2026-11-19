@@ -8,7 +8,7 @@ const readMethods = new Set(['GET', 'HEAD', 'OPTIONS']);
 const stopRoutes = new Set([
   '/api/loop/stop', '/api/disconnect', '/api/stages/stop', '/api/pirates/advance/stop',
   '/api/guild/mutual/stop', '/api/trials/stop', '/api/capture/stop',
-  '/api/accounts/alipay-login/cancel', '/api/accounts/phone-login/cancel',
+  '/api/accounts/alipay-login/cancel', '/api/accounts/wechat-login/cancel', '/api/accounts/phone-login/cancel',
 ]);
 
 function checkVersion(version) {

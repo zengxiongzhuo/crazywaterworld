@@ -1,6 +1,8 @@
 import { exactAutomationId } from './automation-policy.mjs';
 import { loadMapAsset } from './world.mjs';
 import { resourceFieldRows, resourceFieldTotals } from './resource-fields.mjs';
+import { resourceFieldTargets } from './resource-field-allocation.mjs';
+import { observeResourceFieldHoldings, forgetReleasedResourceField } from './resource-field-history.mjs';
 import { pendingPetrol } from './dispatch-preview.mjs';
 import { fleetRecordReason, dispatchReservationReason, reserveDispatch } from './fleet-availability.mjs';
 import { registerFleetReservations, isFleetReserved } from './fleet-reservations.mjs';
@@ -50,11 +52,14 @@ function reconcile(state, ledger, baseline) {
 export async function readResourceFieldState(client, protocol, config, player, options = {}) {
   const { getSettings = () => ({}), ledger, enabled = () => true, mapLoader = loadMapAsset } = options;
   const settings = getSettings(), who = identity(player), baseline = ledger?.keyRecords() ?? {};
+  const playerId = exactAutomationId(player?.playerId), worldId = exactAutomationId(player?.worldId);
+  const scope = worldId && playerId ? worldId + ':' + playerId : null;
+  const previous = scope && ledger?.resourceFieldHistory?.(scope);
   const check = () => { if (!enabled() || client.connected === false || who !== identity(player) || settings !== getSettings()) throw Error('账号或配置已变化，请重新读取资源田'); };
   check();
   const state = { checkedAt: now(client), worldId: exactAutomationId(player?.worldId), count: null, maxNum: null, remaining: null,
     owned: [], candidates: [], fleets: [], rawFleets: [], totals: resourceFieldTotals(null, []), notes: [], reason: '', cost: null, fuel: null,
-    fieldsSynced: false, fleetsSynced: false, automatic: settings.resourceFields?.enabled === true };
+    fieldsSynced: false, fleetsSynced: false, automatic: settings.resourceFields?.enabled === true, lostFields: {} };
   const get = async (name, label, body = {}) => {
     try {
       if (!protocol?.[name + 'Request'] || !protocol?.[name + 'Response']) throw Error('协议未提供');
@@ -84,6 +89,24 @@ export async function readResourceFieldState(client, protocol, config, player, o
       return { ...row, active, productionStatus: active === true ? '产出中' : active === false ? '城池失守，暂停产出' : '城池归属未同步' };
     });
     state.totals = resourceFieldTotals(info, state.owned.map(f => ({ ...f, perHour: f.active === false ? 0 : f.active === null ? null : f.perHour })));
+    if (previous && settings.resourceFields) {
+      const releasing = new Set(), upgrades = new Set();
+      for (const { details: d } of Object.values(baseline)) {
+        if (d?.worldId !== worldId || d.playerId !== playerId) continue;
+        if (d.kind === 'resourceFieldGiveUp' && d.phase === 'givingUp') releasing.add(d.gridIdx);
+        if (d.kind === 'resourceFieldDispatch' && d.replacement) {
+          if (['givingUp', 'released'].includes(d.phase)) releasing.add(d.replacement.grid);
+          if (d.phase === 'dispatching' && d.replacement.resourceId === d.resourceId) upgrades.add(d.gridIdx);
+        }
+      }
+      observeResourceFieldHoldings(state, { scope, previous, policy: settings.resourceFields, ledger,
+        previewOnly: options.previewOnly, releasing, upgrades });
+      if (state.lossHistoryReason) state.notes.push(state.lossHistoryReason);
+      else if (!settings.resourceFields.refillAfterLoss) {
+        const held = Object.keys(state.lostFields).length;
+        if (held) state.notes.push(`「失地后自动补齐」已关闭，已为失去的 ${held} 块田按资源类型保留缺口。`);
+      }
+    }
   } else state.reason ||= '资源田名额未同步';
   state.fleetsSynced = Array.isArray(own?.fleets) && new Set(own.fleets.map(f => f.buildingId)).size === own.fleets.length;
   state.rawFleets = (state.fleetsSynced ? own.fleets : []).filter(f => /^[1-9]\d*远征船$/.test(f.buildingId)).map(f => ({ ...f,
@@ -99,18 +122,34 @@ export async function readResourceFieldState(client, protocol, config, player, o
   if (operation && allRecords[operation.key]?.id !== operation.id) throw Error('替换记录已变化，已停止出征');
   const heldRecord = operation ? allRecords[operation.key] : null;
   const visibleRecords = Object.fromEntries(Object.entries(allRecords).filter(([key]) => key !== operation?.key));
-  const records = fieldRecords({ keyRecords: () => visibleRecords }, state.worldId), pending = records.filter(([, r]) => r.details.active !== false && !state.owned.some(f => f.grid === r.details.gridIdx));
+  const records = fieldRecords({ keyRecords: () => visibleRecords }, state.worldId).filter(([key, r]) => {
+    const d = r.details;
+    // Only a previously won, fully settled trip to an observed lost field can be retried today.
+    if (!settings.resourceFields?.refillAfterLoss || d.playerId !== playerId || !Object.hasOwn(state.lostFields, d.gridIdx)
+      || !r.confirmed || d.active !== false || !(d.occupied || d.everOccupied) || baseline[key]?.id !== r.id) return true;
+    if (!options.previewOnly) ledger.releaseCompletedKey(key);
+    return false;
+  });
+  const pending = records.filter(([, r]) => r.details.active !== false && !state.owned.some(f => f.grid === r.details.gridIdx));
   state.pendingFuel = ledger ? pendingPetrol(ledger) : 0;
   if (heldRecord && !heldRecord.confirmed) state.pendingFuel = Math.max(0, state.pendingFuel - heldRecord.details.cost);
   state.autoStopReason = ledger?.hasKey(`resource-field-stop:${state.worldId}:${day(state.checkedAt)}`) ? '今日资源田请求曾被服务器拒绝，自动占田暂缓至明日'
     : ledger?.hasKey(`resource-field-partial:${state.worldId}:${day(state.checkedAt)}`) ? '今日替换只完成放弃，自动占田暂缓；请重新选择目标'
-    : records.some(([, r]) => r.confirmed && r.details.active === false && !r.details.occupied && day(r.details.returnedAt) === day(state.checkedAt)) ? '今日有占田出征返航后尚未确认占领，自动占田暂缓至明日' : '';
-  state.pending = pending.map(([, r]) => ({ grid: r.details.gridIdx, fleetId: r.details.buildingId, confirmed: r.confirmed,
-    replaceGridIdx: r.details.replacement?.grid ?? null, phase: r.details.phase ?? 'dispatching',
-    reason: r.details.phase === 'givingUp' ? '旧田放弃结果待确认，尚未出征新田'
-      : r.details.phase === 'released' ? '旧田已放弃，替换未继续，等待核对处理' : '新田出征待确认' }));
+    : records.some(([, r]) => r.confirmed && r.details.active === false && !r.details.occupied && !r.details.everOccupied && day(r.details.returnedAt) === day(state.checkedAt)) ? '今日有占田出征返航后尚未确认占领，自动占田暂缓至明日' : '';
+  state.pending = pending.map(([, r]) => {
+    // Older dispatch records only stored the grid. Recover its resource even if its city was lost.
+    const tile = map?.fieldAt(r.details.gridIdx);
+    const resourceId = r.details.resourceId ?? (tile && resourceFieldRows(config, player, { fields: [
+      { gridIdx: r.details.gridIdx, cityId: tile.cityId, type: tile.resType }
+    ] }, guilds?.guilds)[0].resourceId);
+    return { grid: r.details.gridIdx, resourceId, fleetId: r.details.buildingId, confirmed: r.confirmed,
+      replaceGridIdx: r.details.replacement?.grid ?? null, phase: r.details.phase ?? 'dispatching',
+      reason: r.details.phase === 'givingUp' ? '旧田放弃结果待确认，尚未出征新田'
+        : r.details.phase === 'released' ? '旧田已放弃，替换未继续，等待核对处理' : '新田出征待确认' };
+  });
   for (const field of state.owned) {
     const lock = allRecords[replacementKey(state.worldId, field.grid)];
+    field.dispatchActive = records.some(([, r]) => r.details.active !== false && r.details.gridIdx === field.grid);
     field.replacementReason = lock && lock.id !== heldRecord?.details.replacement?.lock?.id ? '此田已有放弃或替换操作，等待结果' : '';
     field.giveUpReason = field.replacementReason ? '此田已有放弃或替换操作，等待结果' : '';
   }
@@ -135,8 +174,7 @@ export async function readResourceFieldState(client, protocol, config, player, o
       targets.push({ gridIdx: grid, cityId: f.cityId, type: f.resType });
     }
     state.candidates = resourceFieldRows(config, player, { fields: targets }, guilds?.guilds).filter(row => row.resourceId && integer(row.perHour, 1) && integer(row.level, 1));
-    const preferred = settings.resourceFields?.preferredResource ?? '汽油';
-    state.candidates.sort((a, b) => Number(b.resourceId === preferred) - Number(a.resourceId === preferred) || b.perHour - a.perHour || a.grid - b.grid);
+    state.candidates.sort((a, b) => b.level - a.level || b.perHour - a.perHour || a.grid - b.grid);
     for (const row of state.candidates) {
       const prior = records.find(([, r]) => r.details.gridIdx === row.grid);
       row.reason = allRecords[replacementKey(state.worldId, row.grid)] ? '此田有放弃或替换结果待确认，暂不占回'
@@ -178,10 +216,7 @@ export async function readResourceFieldsOverview(...args) {
 }
 
 const effectiveYield = field => field?.active === false ? 0 : field?.active === true && integer(field.perHour) ? field.perHour : null;
-function plan(state, gridIdx, fleetId, settings, ledger, automatic = false, replaceGridIdx = null) {
-  if (automatic && replaceGridIdx !== null) throw Error('自动占田不允许放弃或替换现有田地');
-  if (automatic && !settings.resourceFields?.enabled) throw Error('资源田自动化未开启');
-  if (automatic && state.autoStopReason) throw Error(state.autoStopReason);
+function plan(state, gridIdx, fleetId, replaceGridIdx = null) {
   if (state.reason) throw Error(state.reason);
   const replacement = replaceGridIdx === null ? null : state.owned.find(field => field.grid === replaceGridIdx);
   if (replaceGridIdx !== null && (!replacement || replaceGridIdx === gridIdx)) throw Error('请选择仍由本人占领的另一块旧田');
@@ -193,16 +228,64 @@ function plan(state, gridIdx, fleetId, settings, ledger, automatic = false, repl
   if (target.reason) throw Error(target.reason);
   if (!fleet?.available) throw Error(fleet?.reason || '舰队未同步');
   if (state.fuel - state.pendingFuel < state.cost) throw Error('可用汽油不足（含其他任务待确认消耗）');
-  if (automatic) {
-    const p = settings.resourceFields;
-    if (!p?.enabled || !p.fleetIds.includes(fleetId)) throw Error('资源田自动化或此舰队未启用');
-    if (fleet.durability < fleet.maxDura * p.minDurabilityPercent / 100) throw Error('未达到配置的最低耐久');
-    if (state.fleets.filter(f => f.available).length <= p.reserveFleetCount) throw Error('保留空闲舰队数量不足');
-    if (target.level < p.minLevel) throw Error('田地等级低于配置');
-    if (!integer(target.recommendedPower, 1) || !integer(fleet.power, 1) || fleet.power < target.recommendedPower) throw Error('舰队未达到推荐战力或战力未同步');
-  }
   return { gridIdx, fleetId, cost: state.cost, target, replacement: replacement ? { ...replacement, effectivePerHour: effectiveYield(replacement) } : null,
     label: `${fleet.name}${replacement ? '替换旧田 ' + replacement.grid + ' → ' : '占领'}${target.cityName} · ${target.name}（${gridIdx}）` };
+}
+
+// Once a replacement has released its old field, finish only the originally reserved dispatch.
+function automaticPlan(state, policy, releasedTarget = null) {
+  if (!policy?.enabled) return { reason: '资源田自动化未开启' };
+  if (state.reason || state.autoStopReason || state.lossHistoryReason) return { reason: state.reason || state.autoStopReason || state.lossHistoryReason };
+  if (state.fuel - state.pendingFuel < state.cost) return { reason: '可用汽油不足（含其他任务待确认消耗）' };
+  const available = state.fleets.filter(f => f.available);
+  if (available.length <= policy.reserveFleetCount) return { reason: '保留空闲舰队数量不足' };
+  const fleets = available.filter(f => policy.fleetIds.includes(f.id) && integer(f.power, 1)
+    && f.durability >= f.maxDura * policy.minDurabilityPercent / 100 && (!releasedTarget || f.id === releasedTarget.fleetId));
+  if (!fleets.length) return { reason: '没有达到耐久与战力条件的参与舰队' };
+
+  const targets = resourceFieldTargets(policy, state.maxNum);
+  const counts = Object.fromEntries(Object.keys(targets).map(id => [id, 0]));
+  const losses = { ...counts }, inactive = { ...counts };
+  if (!policy.refillAfterLoss) for (const id of Object.values(state.lostFields)) losses[id]++;
+  const leaving = new Set(state.pending.map(p => p.replaceGridIdx));
+  for (const field of [...state.owned.filter(f => !leaving.has(f.grid)), ...state.pending]) {
+    if (!Object.hasOwn(counts, field.resourceId)) return { reason: '已占或在途资源田的类型未同步' };
+    counts[field.resourceId]++;
+    if (field.active === false) inactive[field.resourceId]++;
+  }
+  const replaceable = state.owned.filter(f => !f.replacementReason && !f.dispatchActive && effectiveYield(f) !== null
+    && (f.active ? integer(f.level, 1) : policy.refillAfterLoss))
+    .sort((a, b) => Number(a.active) - Number(b.active) || a.level - b.level || a.grid - b.grid);
+  const surplus = replaceable.find(f => (counts[f.resourceId] - (policy.refillAfterLoss && f.active ? inactive[f.resourceId] : 0)) > targets[f.resourceId]);
+  let choice = null;
+  // Candidates are sorted by descending level. Prefer filling a missing resource, then
+  // upgrade an existing field of the same resource even if the configured quota is full.
+  for (const target of state.candidates) {
+    const id = target.resourceId;
+    if (!targets[id] || (!policy.refillAfterLoss && Object.hasOwn(state.lostFields, target.grid))
+      || target.reason || target.level < policy.minLevel || !integer(target.recommendedPower, 1)
+      || (releasedTarget && target.grid !== releasedTarget.gridIdx)) continue;
+    const fleet = fleets.find(f => f.power >= target.recommendedPower);
+    if (!fleet) continue;
+    const restoringOwnSlot = releasedTarget?.replacement?.resourceId === id;
+    const productiveShortage = policy.refillAfterLoss && counts[id] - inactive[id] < targets[id];
+    const restoringInactive = restoringOwnSlot && releasedTarget.replacement.active === false && productiveShortage;
+    const missing = restoringInactive || counts[id] + (restoringOwnSlot ? 0 : losses[id]) < targets[id];
+    if (missing && (state.remaining > 0 || (surplus && !releasedTarget))) {
+      choice = { target, fleet, old: state.remaining > 0 ? null : surplus };
+      break;
+    }
+    if (productiveShortage && !releasedTarget) {
+      const old = replaceable.find(f => f.resourceId === id && f.active === false);
+      if (old) { choice = { target, fleet, old }; break; }
+    }
+    if (choice || releasedTarget || counts[id] > targets[id]) continue;
+    const old = replaceable.find(f => f.resourceId === id && f.active && f.level < target.level);
+    if (old) choice = { target, fleet, old };
+  }
+  if (!choice) return { reason: '没有可补足目标数量或提升等级的资源田与舰队组合' };
+  try { return { step: plan(state, choice.target.grid, choice.fleet.id, choice.old?.grid ?? null) }; }
+  catch (error) { return { reason: error.message }; }
 }
 
 function checkPreview(step, proposed, preview) {
@@ -227,7 +310,7 @@ export async function previewResourceField(client, protocol, config, player, int
     replaceGridIdx, replacement: replacement ? { ...replacement, effectivePerHour: effectiveYield(replacement) } : null,
     recommendedPower: target?.recommendedPower ?? null, cost: state.cost, fuel: state.fuel, reason: state.reason, automatic: state.automatic,
     fleets: state.fleets.map(fleet => {
-      try { const step = plan(state, intent.gridIdx, fleet.id, options.getSettings(), options.ledger, false, replaceGridIdx); return { ...fleet, step, available: true }; }
+      try { const step = plan(state, intent.gridIdx, fleet.id, replaceGridIdx); return { ...fleet, step, available: true }; }
       catch (error) { return { ...fleet, available: false, reason: error.message }; }
     }) };
 }
@@ -237,20 +320,29 @@ export async function runResourceFieldShortcut(client, protocol, config, player,
   const proposed = preview?.fleets?.find(f => f.id === fleetId && f.step)?.step;
   if (!proposed || preview.worldId !== exactAutomationId(player?.worldId) || preview.identityKey !== identity(player)) throw Error('确认信息已失效，请重新选择资源田');
   const replaceGridIdx = preview.replaceGridIdx ?? null;
-  if (replaceGridIdx !== null && (options.automatic || preview.replacement?.grid !== replaceGridIdx || proposed.replacement?.grid !== replaceGridIdx)) throw Error('替换确认信息已失效，自动占田不允许替换');
+  if (replaceGridIdx !== null && (preview.replacement?.grid !== replaceGridIdx || proposed.replacement?.grid !== replaceGridIdx)) throw Error('替换确认信息已失效');
   if (replaceGridIdx === null && proposed.replacement) throw Error('替换确认信息不一致');
   if (!enabled() || active.has(client)) throw Error('资源田操作正在执行或账号已变化');
   active.add(client);
   try {
     const settings = getSettings(), who = identity(player);
     const allowed = () => enabled() && client.connected !== false && identity(player) === who && getSettings() === settings;
+    const recheck = (snapshot, released = false) => {
+      const oldGrid = released ? null : replaceGridIdx;
+      if (!options.automatic) return plan(snapshot, preview.gridIdx, fleetId, oldGrid);
+      const { step, reason } = automaticPlan(snapshot, settings.resourceFields, released ? proposed : null);
+      if (step?.gridIdx !== preview.gridIdx || step.fleetId !== fleetId || (step.replacement?.grid ?? null) !== oldGrid) {
+        throw Error(reason || '资源田分配或可用目标已变化，等待下一轮检查');
+      }
+      return step;
+    };
     const state = await readResourceFieldState(client, protocol, config, player, options);
-    const step = plan(state, preview.gridIdx, fleetId, settings, ledger, options.automatic === true, replaceGridIdx);
+    const step = recheck(state);
     checkPreview(step, proposed, preview);
     if (!allowed()) throw Error('账号或配置已变化，操作未发送');
     if (!protocol?.ChallengeResFieldRequest) throw Error('当前协议缺少资源田占领请求');
     if (step.replacement && !protocol?.GiveUpResFieldRequest) throw Error('当前协议缺少资源田放弃请求');
-    const details = { kind: 'resourceFieldDispatch', worldId: state.worldId, buildingId: fleetId, gridIdx: step.gridIdx,
+    const details = { kind: 'resourceFieldDispatch', worldId: state.worldId, playerId: exactAutomationId(player.playerId), buildingId: fleetId, gridIdx: step.gridIdx, resourceId: step.target.resourceId,
       sentAt: state.checkedAt, active: true, occupied: false, cost: step.cost,
       phase: step.replacement ? 'givingUp' : 'dispatching', replacementLeaseUntil: state.checkedAt + 120 };
     const key = keyFor(state.worldId, step.gridIdx); let oldLock = null, ticket;
@@ -276,7 +368,7 @@ export async function runResourceFieldShortcut(client, protocol, config, player,
       if (step.replacement) {
         const ownOptions = { ...options, previewOnly: true, heldOperation: { key, id: ticket.id } };
         const before = await readResourceFieldState(client, protocol, config, player, ownOptions);
-        checkPreview(plan(before, preview.gridIdx, fleetId, settings, ledger, false, replaceGridIdx), proposed, preview);
+        checkPreview(recheck(before), proposed, preview);
         assertHeld(); giveUpAttempted = true;
         await client.sendWatch('GiveUpResFieldRequest', { resFieldGridIdx: replaceGridIdx }, { window: 500 });
         // This read only establishes removal. Any subsequent checks can fail with an
@@ -289,10 +381,11 @@ export async function runResourceFieldShortcut(client, protocol, config, player,
           throw Error('放弃结果待确认，已保留旧田替换、名额、汽油和舰队记录，不会重复放弃或出征');
         }
         released = true;
+        forgetReleasedResourceField(ledger, state.worldId, details.playerId, replaceGridIdx);
         const current = assertHeld(); ledger.updateKeyDetails(key, { ...current.details, phase: 'released', releasedAt: now(client) });
         const after = await readResourceFieldState(client, protocol, config, player, ownOptions);
         if (after.owned.some(field => field.grid === replaceGridIdx)) throw Error('旧田状态再次变化，替换未继续');
-        checkPreview(plan(after, preview.gridIdx, fleetId, settings, ledger), proposed, preview);
+        checkPreview(recheck(after, true), proposed, preview);
         const ready = assertHeld(); ledger.updateKeyDetails(key, { ...ready.details, phase: 'dispatching' });
       }
       assertHeld(); challengeAttempted = true;
@@ -333,30 +426,25 @@ export async function runResourceFieldShortcut(client, protocol, config, player,
 export async function previewResourceFieldPlan(client, protocol, config, player, options) {
   const state = await readResourceFieldState(client, protocol, config, player, { ...options, previewOnly: true });
   const actions = [], notes = [...state.notes];
-  let reason = state.reason || '没有符合策略的目标或舰队';
-  outer: for (const target of state.candidates) for (const fleet of state.fleets) {
-    try {
-      const step = plan(state, target.grid, fleet.id, options.getSettings(), options.ledger, true);
-      actions.push({ kind: 'resourceFieldDispatch', label: step.label, costs: [{ id: '汽油', num: step.cost }] }); break outer;
-    } catch (error) { reason = error.message; }
+  const policy = options.getSettings().resourceFields;
+  if (state.fieldsSynced && policy) {
+    const targets = resourceFieldTargets(policy, state.maxNum);
+    notes.push(`占领上限 ${state.maxNum} 块，本轮目标为汽油 ${targets['汽油']} 块、种子 ${targets['种子']} 块、科技点 ${targets['公会科技点']} 块。`);
   }
-  if (!actions.length) notes.push(reason);
+  const { step, reason } = automaticPlan(state, policy);
+  if (step) actions.push({ kind: 'resourceFieldDispatch', label: step.label, costs: [{ id: '汽油', num: step.cost }] });
+  else notes.push(reason);
   return { actions, notes, counts: { owned: state.count, remaining: state.remaining, candidates: state.candidates.length } };
 }
 
-// One dispatch per check. Prefer the requested material, then its highest base yield.
 export async function runResourceFields(client, protocol, config, player, options) {
   if (!options.getSettings()?.resourceFields?.enabled || options.enabled?.() === false || active.has(client)) return [];
   const state = await readResourceFieldState(client, protocol, config, player, options), settings = options.getSettings();
-  let reason = state.reason || '没有符合资源田策略的目标或舰队';
-  for (const target of state.candidates) {
-    for (const fleet of state.fleets) {
-      let step;
-      try { step = plan(state, target.grid, fleet.id, settings, options.ledger, true); }
-      catch (error) { reason = error.message; continue; }
-      const preview = { gridIdx: target.grid, worldId: state.worldId, identityKey: identity(player), cost: state.cost, fleets: [{ id: fleet.id, step }] };
-      return [await runResourceFieldShortcut(client, protocol, config, player, preview, fleet.id, { ...options, automatic: true })];
-    }
+  const { step, reason } = automaticPlan(state, settings.resourceFields);
+  if (step) {
+    const preview = { gridIdx: step.gridIdx, worldId: state.worldId, identityKey: identity(player), cost: state.cost, fleets: [{ id: step.fleetId, step }],
+      replaceGridIdx: step.replacement?.grid ?? null, replacement: step.replacement };
+    return [await runResourceFieldShortcut(client, protocol, config, player, preview, step.fleetId, { ...options, automatic: true })];
   }
   options.report?.({ skipped: true, label: '资源田自动占领', reason }); return [];
 }

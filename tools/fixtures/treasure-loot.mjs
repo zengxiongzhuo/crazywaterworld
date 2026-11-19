@@ -22,7 +22,7 @@ export function treasureSettings() {
   for (const key of Object.keys(settings.schedule)) settings.schedule[key] = false;
   Object.assign(settings.loop, { world: false, tasks: false, dailies: false, heroes: false });
   settings.resident.rewards = settings.dailies.enabled = false;
-  Object.assign(settings.treasure, { enabled: true, autoJoin: true, onlyTenThousand: true,
+  Object.assign(settings.treasure, { enabled: true, autoJoin: true, qualities: ['ORANGE'],
     repeatAttack: true, autoRepair: true, fleetIds: ['1远征船', '2远征船'] });
   return settings;
 }

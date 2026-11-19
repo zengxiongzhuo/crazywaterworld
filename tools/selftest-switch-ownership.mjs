@@ -98,7 +98,7 @@ try {
 
     for (const enabled of [false, true]) {
       const before = defaultSettings();
-      Object.assign(before.treasure, { enabled, autoJoin: true, onlyTenThousand: true, follow: true,
+      Object.assign(before.treasure, { enabled, autoJoin: true, qualities: ['ORANGE', 'PURPLE'], follow: true,
         fleetIds: ['2远征船', '1远征船'], followNames: ['跟随玩家'], followPlayerIds: ['9007199254740993'],
         avoidNames: ['避战玩家'], avoidPlayerIds: ['9007199254740995'], rewardItems: ['测试奖励'],
         participationMode: 'always', repeatAttack: true, minDurabilityPercent: 73, maxProgress: 85,

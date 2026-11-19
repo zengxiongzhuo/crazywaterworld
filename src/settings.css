@@ -72,7 +72,8 @@
 .config-player-tag>span { min-width:0; overflow-wrap:anywhere }
 .config-player-name { display:block }
 .config-player-picker .config-add input { min-width:0; flex:1; width:100% }
-.config-select-foot { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--muted-foreground) }
+.config-select-foot { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-top:8px; font-size:12px; color:var(--muted-foreground) }
+.config-select-foot-actions { display:flex; flex-wrap:wrap; justify-content:flex-end; gap:6px; margin-inline-start:auto }
 
 .config-order-row { display:grid; grid-template-columns:20px minmax(90px,1fr) auto; align-items:center; gap:8px; border-bottom:1px solid var(--border); padding:8px 0 }
 .config-order-row:last-child { border-bottom:0 }

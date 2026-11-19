@@ -51,7 +51,99 @@ function fixture() {
   };
 }
 
+function quotaFixture(data, { season = 2, level = 25, done = 0 } = {}) {
+  const f = fixture();
+  f.player.worldId = season * 1e6 + 1;
+  f.player.level = level;
+  f.bodies.CounterInfoRequest.counters = [{ type: 'DAILY_FINISH_GUILD_ORDER', num: done }];
+  const quotaConfig = { ...config, tables: { ...config.tables, GuildOrderNumCfg: { data } } };
+  return { ...f,
+    read: () => readGuildOrderView(f.client, protocol, quotaConfig, f.options),
+    run: () => serviceGuildOrders(f.client, protocol, quotaConfig, f.options),
+  };
+}
+
+async function assertQuotaBlocked(data, message, options) {
+  const f = quotaFixture(data, options);
+  await assert.rejects(f.read, /次数配置/, message);
+  assert.match((await f.run()).error, /次数配置/, message);
+  assert.equal(f.calls.length, 0, message + ': invalid quota must stop before any request');
+  assert.equal(f.writes().length, 0, message + ': invalid quota must not consume materials');
+}
+
+async function testOrderQuotas() {
+  // A malformed restricted tier must not disappear and expose the unlimited tier.
+  for (const playerLevel of ['20', 20.5, undefined, null, 0, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    await assertQuotaBlocked([
+      { season: 2, playerLevel: 1, maxNum: -1 },
+      { season: 2, playerLevel, maxNum: 10 },
+    ], 'invalid playerLevel ' + String(playerLevel), { done: 30 });
+  }
+  for (const season of ['2', 2.5, undefined, null, 0, -1, Number.MAX_SAFE_INTEGER + 1]) {
+    await assertQuotaBlocked([
+      { season: 1, playerLevel: 1, maxNum: -1 },
+      { season, playerLevel: 1, maxNum: 10 },
+    ], 'invalid season ' + String(season), { done: 30 });
+  }
+  for (const maxNum of ['10', 10.5, undefined, null, -2, Number.MAX_SAFE_INTEGER + 1]) {
+    await assertQuotaBlocked([
+      { season: 2, playerLevel: 1, maxNum: -1 },
+      { season: 2, playerLevel: 20, maxNum },
+    ], 'invalid maxNum ' + String(maxNum), { done: 30 });
+  }
+  await assertQuotaBlocked([
+    { season: 2, playerLevel: 1, maxNum: -1 },
+    { season: 2, playerLevel: 20, maxNum: 10 },
+    { season: 2, playerLevel: 20, maxNum: -1 },
+  ], 'duplicate selected level');
+  await assertQuotaBlocked([
+    { season: 2, playerLevel: 1, maxNum: -1 },
+    { season: 2, playerLevel: 35, maxNum: '30' },
+  ], 'selected season must be valid even above the player level');
+  await assertQuotaBlocked([], 'empty quota table');
+  await assertQuotaBlocked([{ season: 3, playerLevel: 1, maxNum: -1 }], 'future season only');
+  await assertQuotaBlocked([
+    { season: 1, playerLevel: 1, maxNum: -1 },
+    { season: 2, playerLevel: 35, maxNum: 30 },
+  ], 'existing current season cannot fall back across its level gate');
+
+  const latest = quotaFixture([
+    { season: 11, playerLevel: 1, maxNum: -1 },
+    { season: 2, playerLevel: 1, maxNum: -1 },
+    { season: 9, playerLevel: 1, maxNum: 10 },
+    { season: 5, playerLevel: 1, maxNum: 50 },
+  ], { season: 10, done: 10 });
+  assert.equal((await latest.read()).maxNum, 10, 'use the highest older season regardless of row order');
+  assert.match((await latest.run()).reason, /本赛季上限 10/);
+  assert.equal(latest.writes().length, 0, 'neither a future nor a lower season may lift the selected limit');
+
+  const tiers = [
+    { season: 2, playerLevel: 65, maxNum: -1 },
+    { season: 2, playerLevel: 35, maxNum: 30 },
+    { season: 2, playerLevel: 1, maxNum: 10 },
+    { season: 2, playerLevel: 50, maxNum: 50 },
+  ];
+  for (const [level, maxNum] of [[34, 10], [35, 30], [49, 30], [50, 50], [64, 50], [65, -1]]) {
+    const available = quotaFixture(tiers, { season: 10, level, done: maxNum === -1 ? 1000 : maxNum - 1 });
+    assert.equal((await available.read()).maxNum, maxNum, 'quota at player level ' + level);
+    assert.equal((await available.run()).ok, true, 'last allowed order at player level ' + level);
+    assert.equal(available.writes().length, 1);
+    assert.equal(available.bodies.AllItemRequest.items[0].num, 25, 'one permitted order consumes its materials');
+    if (maxNum !== -1) {
+      const exhausted = quotaFixture(tiers, { season: 10, level, done: maxNum });
+      assert.match((await exhausted.run()).reason, /本赛季上限/);
+      assert.equal(exhausted.writes().length, 0, 'quota reached at player level ' + level);
+      assert.equal(exhausted.bodies.AllItemRequest.items[0].num, 30);
+    }
+  }
+  const zero = quotaFixture([{ season: 2, playerLevel: 1, maxNum: 0 }]);
+  assert.equal((await zero.read()).maxNum, 0);
+  assert.match((await zero.run()).reason, /本赛季上限 0/);
+  assert.equal(zero.writes().length, 0, 'zero quota is a valid prohibition, not unlimited');
+}
+
 export async function testGuildOrders() {
+  await testOrderQuotas();
   const off = fixture();
   assert((await serviceGuildOrders(off.client, protocol, config, { player: off.player })).skipped);
   assert.equal(off.calls.length, 0, 'automatic order submission requires an explicit enabled function');
@@ -80,6 +172,13 @@ export async function testGuildOrders() {
   assert.match((await f.run()).reason, /重新核对/);
   assert.equal((await f.run()).ok, true);
   assert.equal(f.writes().length, 2);
+
+  const future = fixture();
+  future.player.worldId = 2010000402; // S10 server: the config pack has no rows for this season, so the client falls back to the highest older one
+  const futureView = await readGuildOrderView(future.client, protocol, config, future.options);
+  assert.equal(futureView.season, 10);
+  assert.equal(futureView.maxNum, 10, 'a season missing from the config falls back to the highest older season instead of erroring or going unlimited');
+  assert.equal((await future.run()).ok, true);
 
   const production = fixture();
   production.hook(name=>{if(name==='FinishGuildOrderRequest'){
@@ -161,9 +260,13 @@ export async function testGuildOrders() {
   const high = fixture(); high.player.level = 25;
   high.bodies.CounterInfoRequest.counters = [{ type: 'DAILY_FINISH_GUILD_ORDER', num: 20 }];
   assert.equal((await high.run()).ok, true);
-  const unknownSeason = fixture(); unknownSeason.player.worldId = 9000001;
-  assert.match((await unknownSeason.run()).error, /次数配置/);
-  assert.equal(unknownSeason.writes().length, 0);
+  const futureSeason = fixture(); futureSeason.player.worldId = 9000001; // S9: no rows for this season in the config pack
+  assert.equal((await futureSeason.run()).ok, true, 'falls back to the highest season not above the current one, matching the client');
+  assert.equal(futureSeason.writes().length, 1);
+  const noQuota = fixture(); noQuota.player.worldId = 9000001;
+  assert.match((await serviceGuildOrders(noQuota.client, protocol,
+    { ...config, tables: { ...config.tables, GuildOrderNumCfg: { data: [] } } }, noQuota.options)).error, /次数配置/);
+  assert.equal(noQuota.writes().length, 0);
 
   for (const name of ['GuildInfoRequest', 'GuildCityInfoRequest', 'CounterInfoRequest', 'AllItemRequest', 'WeekInfoRequest', 'CargoShipsRequest', 'OnWaterRequest']) {
     const broken = fixture(); broken.bodies[name] = {};

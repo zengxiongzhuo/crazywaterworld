@@ -573,7 +573,7 @@ await test('跟随名单仍为空时，连续修改其他配置及等待失败�
   f.set('treasure.follow', true); await f.tick(600); ui.visible('首次校验失败');
   const message = f.node('config-message').textContent;
   for (const [key, value] of [['treasure.repeatAttack', true], ['treasure.followMode', 'eachTime'],
-    ['factory.keepStock', 61], ['treasure.onlyTenThousand', true]]) {
+    ['factory.keepStock', 61], ['treasure.qualities', ['ORANGE']]]) {
     const gate = deferred(); f.env.beforePost = () => gate.promise;
     const priorPosts = f.posts().length;
     f.set(key, value); ui.visible(key + ' 编辑后');

@@ -16,6 +16,21 @@ function plain(value) {
     .replace(/\r\n?/g, '\n').replace(/[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, '');
 }
 
+function linkTarget(value) {
+  // Only the trusted startup address is linked. Validate the original value:
+  // removing terminal controls must not turn an unsafe input into a link.
+  if (typeof value !== 'string' || value.length > 8192 || !/^https?:\/\//i.test(value)
+    || /[\s\u0000-\u001f\u007f-\u009f\\]/u.test(value)) return null;
+  try {
+    const url = new URL(value);
+    return url.hostname && !url.username && !url.password ? value : null;
+  } catch { return null; }
+}
+
+function addressLink(target, label) {
+  return `\u001b]8;;${target}\u0007${ESC}1;36m${label}${ESC}0m\u001b]8;;\u0007`;
+}
+
 function cellWidth(text) {
   if (/^\p{Mark}+$/u.test(text)) return 0;
   const code = text.codePointAt(0);
@@ -43,7 +58,7 @@ function wrap(text, columns) {
 
 export function createConsoleOutput({ stdout = process.stdout, env = process.env, platform = process.platform, release = os.release() } = {}) {
   const capable = supportsPinnedHeader(stdout, { env, platform, release });
-  let address = null, pinned = false, redraw = false, failed = false, closing = false, closed = false;
+  let address = null, addressTarget = null, pinned = false, redraw = false, failed = false, closing = false, closed = false;
   let queue = [], queuedBytes = 0, history = [], historyBytes = 0, dropped = 0;
   let scheduled = null, blocked = false, waiter = null;
   const dimensions = () => ({ columns: Math.max(0, Number(stdout.columns) || 0), rows: Math.max(0, Number(stdout.rows) || 0) });
@@ -52,7 +67,16 @@ export function createConsoleOutput({ stdout = process.stdout, env = process.env
     const { columns, rows } = dimensions();
     if (!capable || !address || columns < 20 || rows < 6) return null;
     const width = columns - 1; // Avoid a last-column auto-wrap changing the cursor row.
-    const title = wrap('控制台已启动 ' + address, width);
+    const prefix = '控制台已启动 ';
+    // Wrap before adding OSC/SGR so terminal controls never consume cells.
+    // Each wrapped address fragment points at the same complete URL.
+    let offset = 0;
+    const title = wrap(prefix + address, width).map(line => {
+      const start = Math.max(0, prefix.length - offset);
+      offset += line.length;
+      return addressTarget && start < line.length
+        ? line.slice(0, start) + addressLink(addressTarget, line.slice(start)) : line;
+    });
     let guidance = wrap(CONSOLE_GUIDANCE, width);
     if (title.length + guidance.length + 3 > rows) guidance = wrap('关闭网页可继续；保留窗口。Ctrl+C/关窗口即停止。', width);
     if (title.length + guidance.length + 3 > rows) return null;
@@ -148,6 +172,7 @@ export function createConsoleOutput({ stdout = process.stdout, env = process.env
     start(url) {
       if (address || closed) return;
       address = plain(url).replace(/\n/g, '');
+      addressTarget = linkTarget(url);
       if (layout()) { redraw = true; schedule(); }
       else write(CONSOLE_GUIDANCE);
     },

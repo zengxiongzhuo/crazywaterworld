@@ -277,8 +277,8 @@ export function describeAccount(account, { active = false } = {}) {
   const lastSeen = account.lastSeen
     ? { ...account.lastSeen, worldName: worldName(account.lastSeen.worldId) }
     : null;
-  const scanChannel = ['alipay', 'douyin', 'douyin-mitm'].includes(account.source);
-  const channelName = account.source === 'alipay' ? '支付宝' : '抖音';
+  const scanChannel = ['alipay', 'wechat', 'douyin', 'douyin-mitm'].includes(account.source);
+  const channelName = account.source === 'alipay' ? '支付宝' : account.source === 'wechat' ? '微信' : '抖音';
   let title = account.label || lastSeen?.nickname || (scanChannel
     ? `${channelName}账号 ${String(params.openId ?? '').slice(-6)}` : `账号 ${account.id.slice(0, 6)}`);
   if (scanChannel && lastSeen?.nickname) {

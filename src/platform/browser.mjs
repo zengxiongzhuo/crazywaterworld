@@ -112,6 +112,10 @@ export function openBrowser(url) {
     child.on('error', onFail);
     child.unref();
   };
+  if (process.platform === 'darwin') {
+    launch('open', [url], () => {});
+    return 'open';
+  }
   const systemDefault = () => launch('cmd', ['/c', 'start', '', url], () => {});
   const app = findAppBrowser();
   if (app) {

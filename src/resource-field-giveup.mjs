@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { exactAutomationId } from './automation-policy.mjs';
 import { resourceFieldRows } from './resource-fields.mjs';
+import { forgetReleasedResourceField } from './resource-field-history.mjs';
 
 const integer = (value, min = 0) => Number.isSafeInteger(value) && value >= min;
 const identity = player => [player?.worldId, player?.playerId, player?.guildId].map(exactAutomationId).join(':');
@@ -32,6 +33,7 @@ export function settleResourceFieldGiveUps(ledger, { worldId, playerId, fields, 
       ledger.cancel({ id: record.id }); releaseLock(ledger, record);
       changes.push({ key, reason: '放弃尚未发送，过期预留已释放' });
     } else if (d.phase === 'givingUp' && !fields.some(field => field.gridIdx === d.gridIdx)) {
+      forgetReleasedResourceField(ledger, worldId, playerId, d.gridIdx);
       ledger.resolveKey(key, true, { ...d, phase: 'completed', active: false, releasedAt: now });
       releaseLock(ledger, record);
       changes.push({ key, reason: `资源田 ${d.gridIdx} 已确认放弃` });
@@ -91,7 +93,7 @@ export async function previewResourceFieldGiveUp(client, protocol, config, playe
 }
 
 export async function runResourceFieldGiveUp(client, protocol, config, player, preview, options) {
-  if (options.automatic) throw Error('自动占田不允许放弃资源田');
+  if (options.automatic) throw Error('自动占田只在替换时放弃旧田');
   const { getSettings, enabled = () => true, ledger, report = () => {} } = options;
   if (!ledger || preview?.kind !== 'giveUp' || !preview.available || !preview.field || !integer(preview.gridIdx)
     || preview.field.grid !== preview.gridIdx || preview.worldId !== exactAutomationId(player.worldId)

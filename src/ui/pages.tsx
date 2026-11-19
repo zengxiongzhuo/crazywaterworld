@@ -49,15 +49,36 @@ export function resultsPage() {
 
 export function giftCodesPage() {
   return renderToStaticMarkup(<div className="grid gap-3">
-    <Panel title="礼包兑换" help="每个账号独立排队，兑换请求逐个发送。账号登录失败或结果未知只停止该账号；任一账号遇到服务器限频时，同批尚未发送的账号全部停止，之后可重新提交。"><label htmlFor="gift-code-input">礼包码（换行或逗号分隔）</label>
-      <textarea id="gift-code-input" rows={3} maxLength={12000} className="w-full" placeholder="每批最多100个" />
-      <div className="bar"><Button type="button" variant="outline" size="sm" id="gift-load-initial">载入初始码</Button><span id="gift-code-initial-note" className="dim" role="status" /></div>
-      <fieldset className="gift-accounts"><legend>兑换账号</legend>
-        <div className="bar"><Button variant="outline" size="sm" id="gift-select-all">全选</Button><Button variant="outline" size="sm" id="gift-select-none">清空</Button><span id="gift-selected-count" className="dim" /></div>
-        <div id="gift-account-list" className="gift-account-list" />
-        <p className="dim">未连接的账号会自动登录，可能把正在玩的游戏顶下线，兑换后保持连接。已暂停的账号不能选择。</p>
-      </fieldset>
-      <div className="bar"><Button id="gift-code-start">开始兑换</Button><span id="gift-code-state" role="status" /></div></Panel>
+    <Panel title="礼包兑换">
+      <div className="bar"><Button variant="outline" size="sm" id="gift-select-all">全选</Button><Button variant="outline" size="sm" id="gift-select-none">清空</Button><span id="gift-selected-count" className="dim" /></div>
+      <div id="gift-account-list" className="gift-account-list" role="group" aria-label="兑换账号" />
+      <div className="bar gift-redeem-actions"><Button id="gift-code-start" disabled>开始兑换</Button><span id="gift-code-state" role="status" aria-live="polite" /></div>
+    </Panel>
+    <Panel title="共享礼包码库">
+      <div className="bar gift-library-toolbar"><Button type="button" variant="outline" size="sm" id="gift-load-initial">载入未兑换码</Button><Button type="button" variant="outline" size="sm" id="gift-batch-add" aria-haspopup="dialog" aria-controls="gift-batch-dialog">批量新增</Button><label><input id="gift-show-processed" type="checkbox" /> 显示已处理</label></div>
+      <p id="gift-code-initial-note" className="dim" role="status" />
+      <div className="gift-library-table"><table><thead><tr><th scope="col">礼包码</th><th scope="col">可用状态</th><th scope="col">到期日期（北京时间）</th></tr></thead><tbody id="gift-code-library-rows" /></table></div>
+    </Panel>
+    <Panel title="兑换记录">
+      <div className="bar gift-record-toolbar">
+        <label htmlFor="gift-record-account">查看账号</label><select id="gift-record-account" />
+        <label htmlFor="gift-record-status">状态</label><select id="gift-record-status" defaultValue="exclude-invalid">
+          <option value="exclude-invalid">排除失效/不可用</option><option value="all">全部状态</option><option value="invalid">失效/不可用</option>
+          <option value="retryable">可手动重试</option><option value="success">兑换成功</option><option value="used">已兑换</option><option value="rejected">服务器拒绝</option>
+          <option value="unknown">待确认</option><option value="skipped">未发送</option><option value="queued">待兑换</option><option value="sending">兑换中</option>
+        </select><Button id="gift-record-export" variant="outline" disabled>导出 CSV</Button>
+      </div>
+      <p id="gift-record-notice" className="dim" role="status" aria-live="polite" />
+      <div className="overflow-auto table-stack"><table><thead><tr>{['礼包码','状态','结果','时间','操作'].map(title=><th scope="col" key={title}>{title}</th>)}</tr></thead><tbody id="gift-code-history" /></table></div>
+      <div className="bar gift-record-pagination"><label htmlFor="gift-page-size">每页</label><select id="gift-page-size" defaultValue="10">{[10,20,50,100].map(size=><option key={size} value={size}>{size} 条</option>)}</select><Button variant="outline" id="gift-prev" disabled>上一页</Button><span id="gift-page" role="status" /><Button variant="outline" id="gift-next" disabled>下一页</Button></div>
+    </Panel>
+    <dialog id="gift-batch-dialog" aria-labelledby="gift-batch-title">
+      <DialogHeader><DialogTitle id="gift-batch-title">批量新增礼包码</DialogTitle></DialogHeader>
+      <div className="gift-batch-fields"><label htmlFor="gift-batch-input">礼包码</label><textarea id="gift-batch-input" rows={8} maxLength={65536} placeholder="每行一个礼包码" />
+        <label htmlFor="gift-batch-expiry">到期日期（选填，北京时间）</label><Input id="gift-batch-expiry" type="date" />
+        <p id="gift-batch-error" role="status" aria-live="polite" /></div>
+      <DialogFooter><Button id="gift-batch-save" type="button">保存</Button><Button id="gift-batch-cancel" type="button" variant="outline">取消</Button></DialogFooter>
+    </dialog>
   </div>)
 }
 
@@ -68,13 +89,20 @@ export function overviewPage() {
       <p id="overview-task-summary" className="dim" role="status">等待读取运行状态</p>
       <div id="overview-task-groups" />
     </Panel>
-    <Panel title="世界概览" help="只读地图。移动位置按已同步起终点和行军时间推算。自动刷新仅影响本模块，不改挂机间隔；可设5–300秒。" titleAfter={<div className="world-refresh-controls"><Button id="world-map-auto-refresh" size="sm" variant="outline" aria-pressed="true">自动刷新：开</Button><label className="world-refresh-setting">每<input id="world-map-refresh-seconds" aria-label="世界概览刷新秒数" type="number" min="5" max="300" step="1" defaultValue="10" />秒</label></div>}>
+    <Panel title="世界概览" help="点城池可派遣空闲舰队驻防、增援或进攻。募兵、集结和宣战按当前角色与城池条件开放。行军位置按已同步的起终点和时间推算。地图刷新间隔可设为 5–300 秒。" titleAfter={<div className="world-refresh-controls"><Button id="world-map-auto-refresh" size="sm" variant="outline" aria-pressed="true">自动刷新：开</Button><label className="world-refresh-setting">每<input id="world-map-refresh-seconds" aria-label="世界概览刷新秒数" type="number" min="5" max="300" step="1" defaultValue="10" />秒</label></div>}>
       <div id="world-map-fleets" className="fleet-summary" aria-label="我的舰队" />
       <details className="world-map-stats"><summary>城战与货轮详情</summary><div id="world-map-wars" /><div id="world-map-treasures" /></details>
       <details className="world-map-stats"><summary>汽油用量</summary><div id="world-map-resources" /></details>
       <div className="bar world-map-toolbar"><Button id="world-map-refresh" variant="outline" size="sm">刷新地图</Button><Button id="world-map-pan" variant="outline" size="sm" aria-pressed="false">移动地图</Button><Button id="world-map-reset" variant="outline" size="sm">全图</Button><Button id="world-map-home" variant="outline" size="sm">定位舰队</Button><label htmlFor="world-map-zoom">缩放</label><input id="world-map-zoom" type="range" min="1" max="8" step="0.25" defaultValue="1" /><span id="world-map-time" role="status">尚未读取</span></div>
       <div id="world-map-layers" className="bar" />
-      <div className="world-map-layout"><div id="world-map-scroll" className="world-map-scroll"><svg id="world-map" role="group" aria-label="只读世界地图" /></div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help"><span className="for-mouse">拖动平移 · Ctrl+滚轮缩放 · </span><span className="for-touch">点「移动地图」后单指拖动 · 用缩放滑块放大 · </span>放大查看舰队名和攻守优先+排队数</p><aside id="world-map-detail" className="world-map-detail" hidden /></div>
+      <div className="world-map-layout"><div className="world-map-stage">
+        <div id="world-map-scroll" className="world-map-scroll"><svg id="world-map" role="group" aria-label="世界地图" /></div>
+        <dialog id="world-map-detail" className="world-map-detail" aria-labelledby="world-map-target-name" hidden>
+          <div className="world-map-detail-heading"><strong id="world-map-target-name" /><Button id="world-map-detail-close" variant="ghost" size="sm" aria-label="关闭地图详情"><X aria-hidden="true" size={16} /></Button></div>
+          <div id="world-map-city-actions" className="world-city-actions" hidden />
+          <div id="world-map-target-facts" />
+        </dialog>
+      </div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help"><span className="for-mouse">拖动平移 · Ctrl+滚轮缩放 · 悬停查看城池操作，点击固定</span><span className="for-touch">点城池操作 · 点「移动地图」后可单指拖动</span></p></div>
       <p id="world-map-notes" className="dim" />
     </Panel>
     <Panel title="资源田概览" help="按资源类型查看已占数量与有效基础产量，展开查看明细。管理弹窗展示所有已占田，可逐块替换或放弃，也可选择新田占领。" titleAfter={<div className="bar"><a className="inline-link" href="#config-group-resourceFields">资源田配置</a><Button id="resource-fields-refresh" variant="outline" size="sm" disabled>刷新资源田</Button></div>}>
@@ -82,7 +110,7 @@ export function overviewPage() {
         <div className="resource-fields-toolbar"><span id="resource-fields-capacity">连接账号后读取资源田</span><span id="resource-fields-automatic" className="dim" /></div>
         <p id="resource-fields-feedback" className="resource-fields-feedback" role="status" hidden />
         <div id="resource-fields-summary" className="resource-fields-summary" />
-        <details className="resource-fields-help"><summary>同步状态与玩法说明</summary><p id="resource-fields-status" className="dim" role="status">连接账号后读取资源田</p><p className="dim">总览可见时每 60 秒刷新。</p><p id="resource-fields-notes" className="dim" /><div id="resource-fields-pending" className="resource-fields-list" /><p>资源田产出汽油、种子或科技点，城市失守会暂停产出。上方为当前有效田地的基础小时产量，不含加成。</p><p>占领需要目标城市为本盟、本人尚未占领、有名额及足够汽油，并派出可用舰队。推荐战力仅供参考，派遣后仍需行军和战斗。</p><p>替换会先放弃旧田，再派舰队占领新田。新田战败或中途失败不会自动恢复旧田。自动占领默认关闭，只补足空位，不会自动替换已有田。</p></details>
+        <details className="resource-fields-help"><summary>同步状态与玩法说明</summary><p id="resource-fields-status" className="dim" role="status">连接账号后读取资源田</p><p className="dim">总览可见时每 60 秒刷新。</p><p id="resource-fields-notes" className="dim" /><div id="resource-fields-pending" className="resource-fields-list" /><p>资源田产出汽油、种子或科技点，城市失守会暂停产出。上方为当前有效田地的基础小时产量，不含加成。</p><p>占领需要目标城市为本盟、本人尚未占领、有名额及足够汽油，并派出可用舰队。推荐战力仅供参考，派遣后仍需行军和战斗。</p><p>替换会先放弃旧田，再派舰队占领新田。新田战败或中途失败不会自动恢复旧田。开启自动占领后，每次检查都会优先寻找可占的高级田，按资源名额补位或替换低级田。</p></details>
       </section>
       <dialog id="resource-fields-action-dialog" aria-labelledby="resource-fields-action-title">
         <DialogHeader className="flex-row items-center justify-between"><DialogTitle id="resource-fields-action-title">管理资源田</DialogTitle><Button id="resource-fields-dialog-close" variant="outline" size="sm" aria-label="关闭资源田管理">关闭</Button></DialogHeader>
@@ -93,7 +121,7 @@ export function overviewPage() {
           <div className="resource-fields-pagination"><Button id="resource-fields-owned-prev" variant="outline" size="sm">上一页</Button><span id="resource-fields-owned-page" className="dim" /><Button id="resource-fields-owned-next" variant="outline" size="sm">下一页</Button></div>
           <div id="resource-fields-replace-bar" className="resource-fields-replace-bar" hidden><div><strong>正在选择替换目标</strong><p id="resource-fields-replace-note" /></div><Button id="resource-fields-replace-cancel" variant="outline" size="sm">取消替换</Button></div>
           <div className="resource-fields-table-heading"><h3>可占资源田</h3><span className="dim">未选旧田时为新增占领</span></div>
-          <div className="resource-fields-filters"><label htmlFor="resource-fields-resource">候选资源<select id="resource-fields-resource" defaultValue=""><option value="">按策略推荐</option><option value="汽油">汽油</option><option value="种子">种子</option><option value="公会科技点">科技点</option></select></label><label htmlFor="resource-fields-level">最低等级<input id="resource-fields-level" type="number" min="1" max="100" step="1" defaultValue="1" /></label><span className="dim">筛选仅影响下方候选表</span></div>
+          <div className="resource-fields-filters"><label htmlFor="resource-fields-resource">候选资源<select id="resource-fields-resource" defaultValue=""><option value="">全部资源</option><option value="汽油">汽油</option><option value="种子">种子</option><option value="公会科技点">科技点</option></select></label><label htmlFor="resource-fields-level">最低等级<input id="resource-fields-level" type="number" min="1" max="100" step="1" defaultValue="1" /></label><span className="dim">筛选仅影响下方候选表</span></div>
           <p id="resource-fields-candidate-count" className="dim" role="status" />
           <div className="resource-fields-table-scroll" role="region" aria-label="可占资源田表格，可横向滚动" tabIndex={0}><table className="resource-fields-table"><thead><tr><th scope="col">资源</th><th scope="col">田地 / 等级</th><th scope="col">城市 / 格子</th><th scope="col">基础时产</th><th scope="col">推荐战力</th><th scope="col">操作</th></tr></thead><tbody id="resource-fields-candidates" /></table></div>
           <p className="resource-fields-table-hint dim">左右滑动查看位置、产量与推荐战力。</p>
@@ -269,6 +297,7 @@ export function accountPage() {
       <div className="account-add-body">
         <p id="account-add-feedback" className="phone-feedback" role="status" aria-live="polite" aria-atomic="true" />
         <div id="account-add-channels" className="account-channel-grid">
+          <Button type="button" variant="outline" className="account-channel h-auto pointer-coarse:h-auto items-start justify-start gap-3.5 p-5 has-[>svg]:px-5 whitespace-normal text-left" data-login-channel="wechat-qr"><QrCode className="size-[22px]" aria-hidden="true" /><span><strong>微信扫码</strong><span>手机微信授权，选择游戏角色</span></span></Button>
           <Button type="button" variant="outline" className="account-channel h-auto pointer-coarse:h-auto items-start justify-start gap-3.5 p-5 has-[>svg]:px-5 whitespace-normal text-left" data-login-channel="alipay"><QrCode className="size-[22px]" aria-hidden="true" /><span><strong>支付宝</strong><span>扫码登录，选择游戏角色</span></span></Button>
           <Button type="button" variant="outline" className="account-channel h-auto pointer-coarse:h-auto items-start justify-start gap-3.5 p-5 has-[>svg]:px-5 whitespace-normal text-left" data-login-channel="phone"><Smartphone className="size-[22px]" aria-hidden="true" /><span><strong>益世界 APP</strong><span>账号密码或短信验证码</span></span></Button>
           <Button type="button" variant="outline" className="account-channel h-auto pointer-coarse:h-auto items-start justify-start gap-3.5 p-5 has-[>svg]:px-5 whitespace-normal text-left" data-login-channel="wechat"><MessageCircle className="size-[22px]" aria-hidden="true" /><span><strong>微信小游戏</strong><span>从电脑微信读取登录信息</span></span></Button>
@@ -285,6 +314,18 @@ export function accountPage() {
             <div className="bar"><Button id="alipay-save" type="button" hidden disabled>保存所选角色</Button><Button id="alipay-roles-retry" type="button" variant="outline" hidden>重新读取角色</Button></div>
           </div>
           <p className="dim">本机需安装 Edge 或 Chrome。扫码后会进入游戏，可能让同账号的游戏客户端下线。</p>
+        </section>
+        <section id="account-add-wechat" hidden>
+          <div id="wechat-flow" className="wechat-flow">
+            <div className="bar"><Button id="wechat-start" type="button">生成二维码</Button><Button id="wechat-cancel" type="button" variant="outline" hidden>取消</Button></div>
+            <img id="wechat-qr" className="wechat-qr" alt="微信扫码登录二维码" width="256" height="256" hidden />
+            <p id="wechat-hint" className="phone-feedback dim" role="status" aria-live="polite" aria-atomic="true">点击「生成二维码」，然后使用微信扫一扫。</p>
+            <div id="wechat-roles" hidden />
+            <p id="wechat-result" hidden />
+            <p id="wechat-expiry" className="dim" />
+            <div className="bar"><Button id="wechat-save" type="button" hidden disabled>保存所选角色</Button><Button id="wechat-roles-retry" type="button" variant="outline" hidden>重新读取角色</Button></div>
+          </div>
+          <p className="dim">读取角色会登录游戏，可能让同账号的游戏客户端下线。</p>
         </section>
         <section id="account-add-phone" hidden>
           <p id="phone-step" className="sr-only" role="status">登录验证 → 选择区服和角色 → 保存并切换</p>
@@ -351,11 +392,19 @@ export function accountPage() {
 
 export function guildPage() {
   return renderToStaticMarkup(<div className="grid gap-3">
-    <Panel title="联盟福利">
-      <div className="bar"><Button id="guild-refresh" variant="outline">刷新联盟</Button></div>
-      <div id="guild-view" className="progression-view" aria-live="polite" />
-    </Panel>
-    <Panel title="联盟求助"><div id="guild-aid-view" className="progression-view" /></Panel>
-    <Panel title="联盟科技" help="当前角色的科技等级与加成。升级只执行一级，扣除对应科技点；发送前重新核对等级、阶段、前置科技和费用。"><div className="bar"><Button id="guild-tech-refresh" variant="outline" size="sm">刷新科技</Button></div><div id="guild-tech-view" className="progression-view" aria-live="polite" /></Panel>
+    <Card>
+      <CardHeader>
+        <CardTitle>联盟求助</CardTitle>
+        <CardAction className="row-span-1 self-center"><Button id="guild-refresh" variant="outline" size="sm">刷新求助</Button></CardAction>
+      </CardHeader>
+      <CardContent><div id="guild-aid-view" className="progression-view" /></CardContent>
+    </Card>
+    <Card className="gap-3 max-md:gap-3">
+      <CardHeader>
+        <CardTitle className="title-with-help">联盟科技<HelpTip title="联盟科技">等级上限随赛季阶段开放。选择一项科技可设置目标等级，确认费用后逐级升级。</HelpTip></CardTitle>
+        <CardAction className="row-span-1 self-center"><Button id="guild-tech-refresh" variant="outline" size="sm">刷新科技</Button></CardAction>
+      </CardHeader>
+      <CardContent><div id="guild-tech-view" aria-live="polite" /></CardContent>
+    </Card>
   </div>)
 }

@@ -7,6 +7,7 @@ import { spawnSync } from 'node:child_process';
 const root = path.resolve(import.meta.dirname, '..');
 const temporary = fs.mkdtempSync(path.join(fs.realpathSync(os.tmpdir()), 'cw-offline-'));
 const cases = [
+  ['selftest-start-console.mjs'],
   ['selftest-campaign-report-rewards.mjs'],
   ['selftest-world-boss-fleets.mjs'],
   ['selftest-world-boss-lineups.mjs'],
@@ -19,6 +20,11 @@ const cases = [
   ['selftest-automation-results-http.mjs'],
   ['selftest-fleet-speed.mjs'],
   ['selftest-fleet-speed-http.mjs'],
+  ['selftest-world-city-dispatch.mjs'],
+  ['selftest-world-city-declare.mjs'],
+  ['selftest-world-city-assemble.mjs'],
+  ['selftest-world-city-defence.mjs'],
+  ['selftest-world-city-actions-http.mjs'],
   ['selftest-storage-transactions.mjs'],
   ['selftest-settings-version.mjs'],
   ['selftest-settings-recovery.mjs'],
@@ -27,6 +33,7 @@ const cases = [
   ['selftest-console-version-http.mjs'],
   ['selftest-console-version-ui.mjs'],
   ['selftest-protocol-updates.mjs'],
+  ['selftest-protocol-dropin.mjs'],
   ['selftest-protocol-refresh-http.mjs'],
   ['selftest-resource-version.mjs'],
   ['selftest-settings-runtime.mjs'],
@@ -94,7 +101,13 @@ const cases = [
   ['selftest-account-capture-ui.mjs'],
   ['selftest-account-add-ui.mjs'],
   ['selftest-console-output.mjs'],
+  ['selftest-console-address.mjs'],
   ['selftest-platform-recovery.mjs'],
+  ['selftest-macos-compat.mjs'],
+  ['selftest-gift-library.mjs'],
+  ['selftest-gift-automation.mjs'],
+  ['selftest-gift-library-http.mjs'],
+  ['selftest-gift-codes-ui.mjs'],
   ['selftest-capture-recovery-http.mjs'],
   ['selftest-phone-login.mjs'],
   ['selftest-phone-login-http.mjs'],
@@ -103,6 +116,12 @@ const cases = [
   ['selftest-alipay-login.mjs'],
   ['selftest-alipay-login-http.mjs'],
   ['selftest-alipay-login-ui.mjs'],
+  ['selftest-wechat-qr.mjs'],
+  ['selftest-wechat-mmtls.mjs'],
+  ['selftest-wechat-code.mjs'],
+  ['selftest-wechat-login.mjs'],
+  ['selftest-wechat-login-http.mjs'],
+  ['selftest-wechat-login-ui.mjs'],
 ];
 
 try {

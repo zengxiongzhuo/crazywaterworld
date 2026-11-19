@@ -119,6 +119,20 @@ await test('sendWatch 同样被拦住；断线时读取和被拦请求都明确�
   await blocker;
 });
 
+await test('暂停发生在插入读取期间，未发送的城池操作明确取消', async () => {
+  const { client, sent, respond } = makeClient();
+  let paused = false;
+  const read = client.interleaveRead(() => client.request('MonthCardRequest', {}, 'MonthCardResponse'));
+  await sleep(1);
+  const watch = client.sendWatch('DeclareWarRequest', { cityId: 1 }, {
+    beforeSend() { if (paused) throw Error('账号已暂停'); }
+  });
+  paused = true;
+  respond('MonthCardResponse');
+  await Promise.all([read, assert.rejects(watch, error => error.notSent && /暂停/.test(error.message))]);
+  assert.deepEqual(sent, ['MonthCardRequest']);
+});
+
 // ---- 控制台路由 ----
 const live = new Set();
 const realConnected = Object.getOwnPropertyDescriptor(GameClient.prototype, 'connected');

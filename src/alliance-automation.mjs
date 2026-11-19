@@ -229,7 +229,7 @@ export async function runAllianceAutomation(client, protocol, config, player, { 
       const view = await readGuildTech(client, config, player, { ledger });
       const chosen = view.rows.find(row => row.canUpgrade && (!p.techIds?.length || p.techIds.includes(String(row.id))));
       if (!chosen) return emit({ key: 'allianceTech', label: '联盟科技自动升级', skipped: true, reason: view.reason || '所选科技暂无可用升级或科技点不足' });
-      const result = await upgradeGuildTech(client, config, player, { techId: chosen.id, expectedLevel: chosen.level, maxCost: chosen.cost, ledger,
+      const result = await upgradeGuildTech(client, config, player, { techId: chosen.id, expectedLevel: chosen.level, maxCost: chosen.cost, expectedIdentity: view.identity, ledger,
         counters: { allianceTech: 1 }, limits: { allianceTech: p.techDailyLimit },
         enabled: () => active() && getSettings().alliance.autoTech && (!getSettings().alliance.techIds?.length || getSettings().alliance.techIds.includes(String(chosen.id))) });
       emit({ key: 'allianceTech', ...result });

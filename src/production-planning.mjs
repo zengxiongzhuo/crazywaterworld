@@ -5,7 +5,7 @@ import { activityProductionEnabled } from './activity-automation.mjs';
 import { createProductionEligibility } from './production-eligibility.mjs';
 
 const rows = (config, key) => config?.tables?.[key]?.data ?? [];
-const sourceNames = { resident: '居民订单', merchant: '不差钱商人', cargo: '贸易港', guildRecruit: '联盟招募',
+const sourceNames = { resident: '居民订单', merchant: '不差钱商人', cargo: '贸易港', guildRecruit: '联盟募兵',
   heroRaid: '超凡英雄', refugee: '难民订单', building: '建筑备料', museum: '博物馆', guildShip: '联盟商船',
   petAdvance: '海兽进阶', petFeed: '海兽投喂', factory: '常规备货' };
 const timingNames = { observed: '会话实测', server: '服务器完成时刻', 'effects-estimate': '加成公式估算', 'config-estimate': '配置耗时估算' };
@@ -58,45 +58,19 @@ export function buildProductionModel(snapshot, config, settings, { pendingMateri
   };
   for (const factory of snapshot.factories) {
     const building = snapshot.buildings.find(row => row.id === factory.id);
-    const lanes = timing.lanes(building);
+    const { lanes, finishes, jobs, missing } = timing.factoryQueue(building, factory.queue);
+    missingReads.push(...missing.map(reason => factory.id + reason));
     capacityEstimated ||= lanes.estimated || lanes.count > 1 && lanes.expiresAt !== null;
     const facilityMachines = Array.from({ length: lanes.count }, (_, index) => ({
-      id: factory.id + ':' + (index + 1), availableAt: relative(factory.upgradingUntil),
+      id: factory.id + ':' + (index + 1), availableAt: relative(finishes[index]),
       ...(index > 0 && lanes.expiresAt !== null ? { availableUntil: relative(lanes.expiresAt) } : {}),
     }));
     for (const [index, machine] of facilityMachines.entries()) {
       machineNames.set(machine.id, factory.id + (facilityMachines.length > 1 ? ' 第' + (index + 1) + '生产位' : ''));
     }
     factoryMachines.set(factory.id, facilityMachines);
-    const finishes = facilityMachines.map(() => now);
-    const active = factory.queue.filter(job => job.finishTime > now);
-    const completed = factory.queue.filter(job => job.finishTime !== null && job.finishTime <= now);
-    for (const job of completed) addFixed(facilityMachines[0], job, now, now, { source: 'server', estimated: false });
-    if (lanes.count > 1 && lanes.expiresAt !== null) {
-      active.sort((a, b) => b.finishTime - a.finishTime);
-      notes.push(factory.id + '生产位归属未由协议标识，常驻位按最晚在产完成时刻释放，额外位按有效期估算');
-    }
-    if (factory.queue.length && !active.length && !completed.length) missingReads.push(factory.id + '在产首项完成时刻未确认');
-    for (const [index, job] of active.entries()) {
-      const lane = Math.min(index, finishes.length - 1);
-      finishes[lane] = Math.max(finishes[lane], job.finishTime);
-      addFixed(facilityMachines[lane], job, now, finishes[lane], { source: 'server', estimated: false });
-    }
-    for (const job of factory.queue.filter(job => job.finishTime === null)) {
-      const duration = timing.factory(factoryConfigs.get(job.productId), { building });
-      if (!duration.seconds) { missingReads.push(factory.id + '排队产物 ' + job.productId + ' 耗时未确认'); continue; }
-      const candidates = finishes.map((finish, index) => ({ finish, index }))
-        .filter(({ finish, index }) => index === 0 || lanes.expiresAt === null || finish + duration.seconds <= lanes.expiresAt)
-        .sort((a, b) => a.finish - b.finish || a.index - b.index);
-      const lane = candidates[0].index;
-      const start = finishes[lane];
-      finishes[lane] += duration.seconds;
-      addFixed(facilityMachines[lane], job, start, finishes[lane], duration);
-    }
-    for (const [index, machine] of facilityMachines.entries()) {
-      machine.availableAt = Math.max(machine.availableAt, relative(finishes[index]));
-      machines.push(machine);
-    }
+    for (const { job, index, start, finish, basis } of jobs) addFixed(facilityMachines[index], job, start, finish, basis);
+    machines.push(...facilityMachines);
     for (const item of factory.finished) addIncoming(factory.id + ':finished:' + item.id, item.id, item.num, now);
     if (factory.nativeAutoActive) missingReads.push(factory.id + '原生自动生产正在追加任务，未来占用尚未固定');
     if (lanes.estimated || lanes.expiresAt !== null) notes.push(factory.id + ' · ' + lanes.reasons.join('，'));
@@ -231,7 +205,7 @@ export function planProduction(snapshot, config, settings, options = {}) {
       ...(refreshUncertain.size ? { lowerBound: null, upperBound: null } : {}) })),
     notes: unique([...model.notes, ...result.reasons,
       ...(model.skippedOrders.size ? ['已跳过 ' + model.skippedOrders.size + ' 项工厂等级不足或禁用的需求，材料可用于其他排产，恢复生产条件后重新计算'] : []),
-      ...(refreshUncertain.size ? ['生产顺序按本次固定需求计算，联盟订单刷新边界之后的实际需求需重新读取确认'] : []),
+      ...(refreshUncertain.size ? ['生产顺序按本次固定需求计算，联盟募兵订单刷新边界之后的实际需求需重新读取确认'] : []),
       ...(estimated ? ['候选方案比较含估算耗时或生产位条件，生产加成与容量变化后需重新读取计算'] : [])]),
     assumptions: [
       '以需求优先级列表为顺序，先优化高级需求及其上游材料，再逐级优化后续需求的齐套时间',

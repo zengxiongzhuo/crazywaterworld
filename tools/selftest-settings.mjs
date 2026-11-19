@@ -412,7 +412,7 @@ try {
   await check('中小货轮兜底设置校验、旧版迁移和奖励顺序持久化', () => {
     const initial = defaultSettings();
     assert.equal(initial.treasure.fallbackEnabled, false);
-    assert.equal(initial.treasure.onlyTenThousand, false);
+    assert.deepEqual(initial.treasure.qualities, ['ORANGE', 'PURPLE', 'BLUE']);
     assert.equal(initial.treasure.fallbackAfter, '21:00');
     assert.equal(initial.treasure.fallbackTargetRewards, 3);
     assert.deepEqual(initial.treasure.fallbackQualities, ['PURPLE', 'BLUE']);
@@ -429,7 +429,7 @@ try {
     assert.deepEqual(loadAutomationSettings('old', { file }).settings.treasure, migrated.treasure);
     assert.deepEqual(fs.readFileSync(file), bytes);
     const custom = defaultSettings();
-    Object.assign(custom.treasure, { onlyTenThousand: false, fallbackEnabled: true, fallbackAfter: '23:15', fallbackTargetRewards: 2,
+    Object.assign(custom.treasure, { qualities: ['BLUE', 'ORANGE'], fallbackEnabled: true, fallbackAfter: '23:15', fallbackTargetRewards: 2,
       fallbackQualities: ['BLUE', 'PURPLE'], fallbackMediumRewardPriority: ['精铁', 'GOLD'], fallbackSmallRewardPriority: ['GOLD', '精铁'] });
     assert.deepEqual(importAutomationSettings(exportAutomationSettings(custom)).treasure, custom.treasure);
     saveAutomationSettings('custom', custom, { file, revision: 0 });
@@ -443,43 +443,61 @@ try {
     assert.throws(() => validateSettings(custom, { catalog: { materials: [{ value: 'GOLD' }] } }), /不存在的选项/);
   });
 
-  await check('中小货轮优先级控件可调整、移除与添加，保留工厂设置', () => {
+  await check('中小货轮奖励支持搜索勾选、调整顺序和清空，保留工厂设置', () => {
     const source = fs.readFileSync(new URL('../src/settings-ui.js', import.meta.url), 'utf8');
     const groups = newStateFunction(source.slice(0, source.indexOf('function configGet(')) + '\nreturn configGroups;')();
     const fields = groups.find(group => group.id === 'treasure').fields;
     const draft = defaultSettings();
     for (const key of ['rewardItems', 'fallbackMediumRewardPriority', 'fallbackSmallRewardPriority']) {
-      assert.equal(fields.find(field => field.key === 'treasure.' + key).catalog, 'treasureRewards');
+      const field = fields.find(field => field.key === 'treasure.' + key);
+      assert.equal(field.catalog, 'treasureRewards');
+      assert.match(field.label, /任一/);
     }
     assert.equal(fields.find(field => field.key === 'treasure.fallbackAfter').kind, 'time');
     assert.equal(fields.find(field => field.key === 'treasure.fallbackAfter').when(draft), false);
     draft.treasure.fallbackEnabled = true;
     assert.equal(fields.find(field => field.key === 'treasure.fallbackAfter').when(draft), true);
-    draft.treasure.fallbackMediumRewardPriority = ['精铁', 'GOLD'];
     draft.factory.speedUpSources = ['cargo'];
-    const el = (tag, className = '', text = '') => ({ tag, className, text, children: [], attrs: {}, append(...nodes) { this.children.push(...nodes); },
+    const el = (tag, className = '', text = '') => ({ tag, className, text, value: '', children: [], attrs: {}, append(...nodes) { this.children.push(...nodes); },
       setAttribute(key, value) { this.attrs[key] = value; }, focus() {} });
     const clear = node => { node.children = []; return node; };
     const button = (text, onclick) => Object.assign(el('button', '', text), { onclick });
-    const editor = source.slice(source.indexOf('function configPriorityEditor('), source.indexOf('function configCropEditor('));
+    const editor = source.slice(source.indexOf('function configMultiselect('), source.indexOf('function configCropEditor('));
     const render = newStateFunction('spec', 'draft', 'catalog', 'el', 'clear', 'configButton', `
       const configEditor = { data: { catalog } };
+      const configPlacePanel = () => {};
       const configGet = key => key.split('.').reduce((value, part) => value[part], draft);
       const configSet = (key, value) => { const [group, field] = key.split('.'); draft[group][field] = value; };
       ${editor}
       return configPriorityEditor(spec, 'test');`);
-    const root = render(fields.find(field => field.key === 'treasure.fallbackMediumRewardPriority'), draft,
-      { treasureRewards: ['精铁', 'GOLD', '木材'].map(value => ({ value, label: value })) }, el, clear, button);
     const descendants = node => [node, ...node.children.flatMap(descendants)];
-    const find = label => descendants(root).find(node => node.attrs['aria-label'] === label);
-    assert.equal(descendants(root).some(node => node.type === 'checkbox'), false);
-    find('精铁下移').onclick();
-    assert.deepEqual(draft.treasure.fallbackMediumRewardPriority, ['GOLD', '精铁']);
-    find('移除GOLD').onclick();
-    assert.deepEqual(draft.treasure.fallbackMediumRewardPriority, ['精铁']);
-    const select = find('添加奖励'); select.value = '木材'; select.onchange();
-    find('添加所选奖励').onclick();
-    assert.deepEqual(draft.treasure.fallbackMediumRewardPriority, ['精铁', '木材']);
+    for (const key of ['fallbackMediumRewardPriority', 'fallbackSmallRewardPriority']) {
+      draft.treasure[key] = ['精铁', 'GOLD'];
+      const root = render(fields.find(field => field.key === 'treasure.' + key), draft,
+        { treasureRewards: ['精铁', 'GOLD', '木材'].map(value => ({ value, label: value })) }, el, clear, button);
+      const nodes = () => descendants(root);
+      const find = label => nodes().find(node => node.attrs['aria-label'] === label);
+      const picker = nodes().find(node => node.tag === 'details');
+      picker.open = true; picker.ontoggle();
+      assert.deepEqual(nodes().filter(node => node.type === 'checkbox').map(node => node.checked), [true, true, false]);
+      find('精铁下移').onclick();
+      assert.deepEqual(draft.treasure[key], ['GOLD', '精铁']);
+      find('移除GOLD').onclick();
+      assert.deepEqual(draft.treasure[key], ['精铁']);
+      const search = nodes().find(node => node.type === 'search');
+      search.value = '木'; search.oninput();
+      const boxes = nodes().filter(node => node.type === 'checkbox');
+      assert.equal(boxes.length, 1);
+      const wood = boxes[0]; wood.checked = true; wood.onchange();
+      assert.deepEqual(draft.treasure[key], ['精铁', '木材']);
+      assert.ok(find('木材上移'));
+      wood.checked = false; wood.onchange();
+      assert.deepEqual(draft.treasure[key], ['精铁']);
+      nodes().find(node => node.text === '清空选择').onclick();
+      assert.deepEqual(draft.treasure[key], []);
+      assert.equal(nodes().find(node => node.tag === 'summary').textContent, '不筛选奖励');
+      assert.equal(nodes().some(node => node.tag === 'li'), false);
+    }
     assert.deepEqual(draft.factory.speedUpSources, ['cargo']);
     const factory = render(groups.find(group => group.id === 'factory').fields.find(field => field.key === 'factory.demandPriority'), draft,
       { demandSources: [{ value: 'cargo', label: '贸易港口' }] }, el, clear, button);
@@ -703,12 +721,136 @@ try {
 
   await check('点金按游戏当天付费次数补差且受钻石预算限制', () => {
     const settings = quiet(); settings.gold.enabled = true; settings.gold.times = 3; settings.resources.allowDiamonds = true; settings.resources.diamondDailyLimit = 15;
-    const snapshot = extra(survey({ RUBY: 100 }), { gold: { info: { paidTimes: 1, maxPaidTimes: 7 } } });
+    const snapshot = extra(survey({ RUBY: 100 }), { gold: { info: { freeTimes: 1, paidTimes: 1, maxPaidTimes: 7 } } });
     const action = planBaseAutomation(snapshot, config, settings).actions.find(a => a.kind === 'paidGold'); assert.equal(action.body.times, 1); assert.equal(action.costs[0].num, 10);
     assert.ok(!planBaseAutomation(snapshot, config, settings, { counters: { diamonds: 10 } }).actions.some(a => a.kind === 'paidGold'));
     snapshot.gold.info.paidTimes = 3; assert.ok(!planBaseAutomation(snapshot, config, settings).actions.some(a => a.kind === 'paidGold'));
     const driver = DAILY_DRIVERS[1006].evaluate({ task: { targetProgress: 5, progress: 0 }, probe: () => ({ info: { freeTimes: 1, paidTimes: 3, maxPaidTimes: 7 } }), config, ruby: 100, settings });
     assert.equal(driver.actions?.length ?? 0, 0);
+  });
+
+  await check('钻石点金先用完免费次数，按官方单点和多点按钮安排每次请求', () => {
+    const settings = quiet();
+    Object.assign(settings.gold, { enabled: true, times: 12 });
+    Object.assign(settings.resources, { allowDiamonds: true, diamondDailyLimit: 120, diamondThreshold: 0 });
+    const info = { freeTimes: 0, paidTimes: 0, maxPaidTimes: 12 };
+    const snapshot = extra(survey({ RUBY: 120 }), { gold: { info } });
+    const next = () => planBaseAutomation(snapshot, config, settings).actions.find(step => step.kind === 'paidGold');
+    assert.equal(next(), undefined);
+    info.freeTimes = 1;
+    assert.deepEqual(next().body, { times: 10, free: false });
+    assert.deepEqual(next().costs, [{ id: 'RUBY', num: 100 }]);
+    info.paidTimes = 10;
+    assert.deepEqual(next().body, { times: 2, free: false });
+    info.paidTimes = 0;
+    settings.gold.times = 3;
+    assert.deepEqual(next().body, { times: 1, free: false });
+    settings.gold.times = 12;
+    settings.resources.diamondDailyLimit = 90;
+    assert.deepEqual(next().body, { times: 1, free: false });
+    settings.resources.diamondDailyLimit = 9;
+    assert.equal(next(), undefined);
+  });
+
+  await check('钻石点金核对奖励与当天次数；读数落后或超时时，续查不重复消费', async () => {
+    const protocol = { ClickGoldInfoRequest: {}, ClickGoldInfoResponse: {}, ClickGoldRequest: {}, ClickGoldResponse: {} };
+    for (const mode of ['confirmed', 'stale', 'timeout']) {
+      const settings = quiet();
+      Object.assign(settings.gold, { enabled: true, times: 1 });
+      Object.assign(settings.resources, { allowDiamonds: true, diamondDailyLimit: 100, diamondThreshold: 0 });
+      const ledger = createUsageLedger('gold-' + mode, { file: path.join(directory, 'gold-evidence.json') });
+      const world = survey({ RUBY: 100 });
+      const player = { playerId: '44002', worldId: 1002001 };
+      const now = Math.floor(Date.now() / 1000);
+      world.now = world.serverNow = now;
+      const resetTime = Date.parse(beijingDay(now * 1000) + 'T00:00:00+08:00') / 1000 + 86400;
+      const info = { freeTimes: 1, paidTimes: 0, maxPaidTimes: 12, resetTime };
+      const writes = [];
+      let readAfterWrite = false;
+      const client = { connected: true, async request(name, body) {
+        if (name === 'AllResourceRequest') return { list: [{ res: 4, amount: { low: 100, high: 0, unsigned: false } }] };
+        if (name === 'ClickGoldInfoRequest') {
+          if (readAfterWrite && mode === 'timeout') throw Error('读取点金次数超时');
+          return { info: { ...info } };
+        }
+        assert.equal(name, 'ClickGoldRequest');
+        writes.push({ ...body });
+        readAfterWrite = true;
+        if (mode === 'confirmed') info.paidTimes += body.times;
+        return { result: [{ gold: 7500, ratio: 1 }] };
+      } };
+      const run = () => {
+        const snapshot = extra(world, { player, gold: { info: { ...info } } });
+        const plan = planBaseAutomation(snapshot, config, settings, ledger.snapshot());
+        return runBaseAutomation(client, protocol, config, plan, { player, ledger, getSettings: () => settings });
+      };
+      const [initial] = await run();
+      assert.deepEqual(writes, [{ times: 1, free: false }]);
+      if (mode === 'confirmed') assert.equal(initial.ok, true);
+      else {
+        assert.equal(initial.status, 'pending');
+        assert.equal(ledger.snapshot().uncertain, 1);
+        assert.deepEqual(ledger.snapshot().counters, { diamonds: 10, goldPaidTimes: 1 });
+        readAfterWrite = false;
+        settings.gold.times = 2;
+        await run();
+        assert.equal(writes.length, 1, '旧读数与更高目标不能触发新的付费点金');
+        assert.equal(ledger.snapshot().uncertain, 1);
+        settings.gold.times = 1;
+        info.paidTimes = 1;
+      }
+      await run();
+      assert.equal(writes.length, 1);
+      assert.equal(ledger.snapshot().uncertain, 0);
+      assert.deepEqual(ledger.snapshot().counters, { diamonds: 10, goldPaidTimes: 1 });
+      assert.deepEqual(ledger.confirmedCounters(), { diamonds: 10, goldPaidTimes: 1 });
+    }
+  });
+
+  await check('钻石点金区分发送前状态变化、服务器明确拒绝和结果不明', async () => {
+    const protocol = { ClickGoldInfoRequest: {}, ClickGoldInfoResponse: {}, ClickGoldRequest: {}, ClickGoldResponse: {} };
+    for (const mode of ['freeChanged', 'paidChanged', 'rejected', 'missingReward', 'writeTimeout']) {
+      const settings = quiet();
+      Object.assign(settings.gold, { enabled: true, times: 1 });
+      Object.assign(settings.resources, { allowDiamonds: true, diamondDailyLimit: 100, diamondThreshold: 0 });
+      const player = { playerId: '44003', worldId: 1002001 };
+      const ledger = createUsageLedger('gold-' + mode, { file: path.join(directory, 'gold-evidence.json') });
+      const info = { freeTimes: 1, paidTimes: 0, maxPaidTimes: 12 };
+      const snapshot = extra(survey({ RUBY: 100 }), { player, gold: { info } });
+      const plan = planBaseAutomation(snapshot, config, settings, ledger.snapshot());
+      assert.equal(plan.actions.filter(action => action.kind === 'paidGold').length, 1);
+      if (mode === 'freeChanged') info.freeTimes = 0;
+      if (mode === 'paidChanged') info.paidTimes = 1;
+      let writes = 0;
+      const client = { connected: true, async request(name) {
+        if (name === 'ClickGoldInfoRequest') return { info: { ...info } };
+        if (name === 'AllResourceRequest') return { list: [{ res: 4, amount: 100 }] };
+        assert.equal(name, 'ClickGoldRequest');
+        writes++;
+        if (mode === 'rejected') throw Object.assign(Error('点金请求被拒绝'), { prompt: {}, request: name });
+        if (mode === 'writeTimeout') throw Error('点金请求超时');
+        return { result: [] };
+      } };
+      const run = plan => runBaseAutomation(client, protocol, config, plan, { getSettings: () => settings, player, ledger });
+      const [entry] = await run(plan);
+      assert.equal(entry.ok, false);
+      const beforeSend = mode === 'freeChanged' || mode === 'paidChanged';
+      assert.equal(writes, beforeSend ? 0 : 1);
+      if (beforeSend || mode === 'rejected') {
+        assert.equal(ledger.snapshot().uncertain, 0);
+        assert.equal(ledger.snapshot().counters.goldPaidTimes ?? 0, 0);
+        assert.equal(ledger.snapshot().counters.diamonds ?? 0, 0);
+        continue;
+      }
+      assert.equal(entry.status, 'pending');
+      info.paidTimes = 1;
+      settings.gold.times = 2;
+      await run(planBaseAutomation(snapshot, config, settings, ledger.snapshot()));
+      assert.equal(writes, 1, '缺少本笔奖励时，其他来源的次数增长不能确认本笔或继续消费');
+      assert.equal(ledger.snapshot().uncertain, 1);
+      assert.deepEqual(ledger.snapshot().counters, { diamonds: 10, goldPaidTimes: 1 });
+      assert.equal(ledger.confirmedCounters().goldPaidTimes ?? 0, 0);
+    }
   });
 
   await check('博物馆完成探索后继续领奖，领奖回执不完整时不报告成功', async () => {
@@ -732,15 +874,15 @@ try {
     const client = { connected: true, async request(name) {
       if (name === 'AllItemRequest') return { items: [{ itemId: '博物馆加速', num: 5 }] };
       if (name === 'AllResourceRequest') return { list: [{ res: 4, amount: 100 }] };
-      if (name === 'ClickGoldInfoRequest') return { info: { paidTimes: 0 } };
+      if (name === 'ClickGoldInfoRequest') return { info: { freeTimes: 1, paidTimes: 0, maxPaidTimes: 7 } };
       return {};
     } };
-    const protocol = { MuseumSpeedUpExploreRequest: {}, MuseumSpeedUpExploreResponse: {}, ClickGoldRequest: {}, ClickGoldResponse: {} };
+    const protocol = { MuseumSpeedUpExploreRequest: {}, MuseumSpeedUpExploreResponse: {}, ClickGoldRequest: {}, ClickGoldResponse: {}, ClickGoldInfoRequest: {}, ClickGoldInfoResponse: {} };
     const guide = await runBaseAutomation(client, protocol, config, planBaseAutomation(snapshot, config, settings), { getSettings: () => settings, ledger });
     assert.equal(guide[0].ok, false); assert.equal(ledger.snapshot().counters.museumGuides, 1); assert.equal(ledger.snapshot().uncertain, 1);
     assert.ok(!planBaseAutomation(snapshot, config, settings, ledger.snapshot()).actions.some(action => action.kind === 'museumGuide'));
     settings.museum.enabled = false; settings.gold.enabled = true; settings.gold.times = 1; settings.resources.allowDiamonds = true;
-    snapshot.gold = { info: { paidTimes: 0, maxPaidTimes: 7 } };
+    snapshot.gold = { info: { freeTimes: 1, paidTimes: 0, maxPaidTimes: 7 } };
     const gold = await runBaseAutomation(client, protocol, config, planBaseAutomation(snapshot, config, settings, ledger.snapshot()), { getSettings: () => settings, ledger });
     assert.equal(gold[0].ok, false); assert.equal(ledger.snapshot().counters.diamonds, 10); assert.equal(ledger.snapshot().counters.goldPaidTimes, 1);
     assert.ok(!planBaseAutomation(snapshot, config, settings, ledger.snapshot()).actions.some(action => action.kind === 'paidGold'));

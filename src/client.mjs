@@ -11,6 +11,7 @@ const MEMBER_REQUESTS = new Set([
   'GuildInfoRequest', 'GotGuildWelfarePackRequest', 'GuildAidListRequest', 'GuildCityInfoRequest',
   'GuildTechInfoRequest', 'UpgradeGuildTechRequest', 'GuildOrderRequest', 'TradeGuildRadarRequest', 'TradeCityReportRequest',
   'GuildAidHelpRequest', 'GuildAidAskRequest', 'MyGuildAidRequest', 'GotMyGuildAidRequest', 'GotGuildTitleRewardRequest',
+  'DeclareWarRequest', 'CancelDeclareWarRequest', 'SetAssembleCityRequest', 'CityRecruitDefenceRequest', 'MoveFleetsToCityRequest',
 ]);
 
 export const TICK_INTERVAL_MS = 1000;
@@ -279,8 +280,13 @@ export class GameClient extends EventEmitter {
 
   // 有一部分请求服务端没有配套的 *Response，成功时静默，失败时只推一条 PromptResponse。
   // 这类请求用 sendWatch：发送后守着 prompt 一小段时间，守到了就是被拒，没守到就当作成功。
-  sendWatch(name, body, { window = 350 } = {}) {
-    if (this.heldByRead()) return this.readGate.then(() => this.sendWatch(name, body, { window }));
+  sendWatch(name, body, { window = 350, beforeSend } = {}) {
+    if (this.heldByRead()) return this.readGate.then(() => this.sendWatch(name, body, { window, beforeSend }));
+    // 插入的页面读取可能晚于操作复核；在真正发送前再检查暂停和确认时效。
+    if (beforeSend) {
+      try { beforeSend(); }
+      catch (error) { throw Object.assign(new Error(error.message, { cause: error }), { notSent: true }); }
+    }
     const order = this.sendOrder;
     this.sendOrder += 1;
     const seq = this.send(name, body);

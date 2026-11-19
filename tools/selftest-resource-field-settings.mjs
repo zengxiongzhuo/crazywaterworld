@@ -9,6 +9,7 @@ import { automationControlView, setAutomationControl } from '../src/automation-c
 import { validateRuntimeSettings } from '../src/settings-runtime.mjs';
 import { dispatchOrder, dispatchReservationReason, reserveDispatch, fleetRecordReason, fleetDispatchView } from '../src/fleet-availability.mjs';
 import { pendingPetrol } from '../src/dispatch-preview.mjs';
+import { resourceFieldTargets } from '../src/resource-field-allocation.mjs';
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-resource-field-settings-'));
 const file = path.join(directory, 'settings.json');
@@ -18,7 +19,10 @@ try {
   test('新账号资源田关闭且没有默认派遣舰队', () => {
     const s = defaultSettings();
     assert.equal(s.resourceFields.enabled, false);
+    assert.equal(s.resourceFields.refillAfterLoss, false);
     assert.deepEqual(s.resourceFields.fleetIds, []);
+    assert.equal(s.resourceFields.checkEverySeconds, 60);
+    assert.deepEqual(resourceFieldTargets(s.resourceFields, 10), { 汽油: 3, 种子: 1, 公会科技点: 6 });
     assert.equal(dispatchOrder(s).at(-1), 'resourceFields');
     assert.equal(automationControlView(s).find(c => c.key === 'resourceFields.enabled').configTarget, 'resourceFields');
   });
@@ -35,9 +39,52 @@ try {
     assert.deepEqual(fs.readFileSync(file), bytes);
     assert(!Object.hasOwn(old, 'resourceFields'));
   });
-  test('配置保存、导出、暂停保留资源偏好与舰队', () => {
+  test('版本14的优先资源获得更高权重，保留其他资源、已选舰队和检查间隔', () => {
+    for (const [key, preferredResource] of [['fuel','汽油'], ['seeds','种子'], ['tech','公会科技点']]) {
+      const legacy = defaultSettings();
+      legacy.resourceFields = { enabled: true, preferredResource, fleetIds: ['1远征船'], minDurabilityPercent: 90,
+        reserveFleetCount: 0, minLevel: 2, checkEverySeconds: 300 };
+      const before = structuredClone(legacy);
+      fs.writeFileSync(file, JSON.stringify({ version: 14, accounts: { legacy: { settingsVersion: 14, revision: 7, settings: legacy } } }));
+      const bytes = fs.readFileSync(file);
+      const { settings: loaded } = loadAutomationSettings('legacy', { file });
+      assert.equal(loaded.resourceFields.allocationMode, 'ratio');
+      assert.deepEqual(loaded.resourceFields.ratios, { fuel: 1, seeds: 1, tech: 1, [key]: 3 });
+      assert.equal(loaded.resourceFields.checkEverySeconds, 300);
+      assert.deepEqual(loaded.resourceFields.fleetIds, ['1远征船']);
+      assert.equal(loaded.resourceFields.enabled, true);
+      assert.equal(loaded.resourceFields.refillAfterLoss, false);
+      assert.deepEqual(importAutomationSettings({ format: SETTINGS_FORMAT, version: 14, settings: legacy }), loaded);
+      assert.deepEqual(validateSettings(legacy), loaded);
+      assert.deepEqual(fs.readFileSync(file), bytes);
+      assert.deepEqual(legacy, before);
+    }
+  });
+  test('早期版本15缺少失地补齐开关时默认关闭，保留已有配额与舰队策略', () => {
+    const legacy = defaultSettings();
+    Object.assign(legacy.resourceFields, { enabled: true, allocationMode: 'quota', quotas: { fuel: 0, seeds: 2, tech: 4 }, fleetIds: ['2远征船'] });
+    delete legacy.resourceFields.refillAfterLoss;
+    fs.writeFileSync(file, JSON.stringify({ version: 15, accounts: { legacy: { settingsVersion: 15, revision: 4, settings: legacy } } }));
+    const before = fs.readFileSync(file);
+    const expected = structuredClone(legacy); expected.resourceFields.refillAfterLoss = false;
+    assert.deepEqual(loadAutomationSettings('legacy', { file }).settings, expected);
+    assert.deepEqual(importAutomationSettings({ format: SETTINGS_FORMAT, version: 15, settings: legacy }), expected);
+    assert.deepEqual(validateSettings(legacy), expected);
+    assert.deepEqual(fs.readFileSync(file), before);
+  });
+  test('相对比例忽略零权重，余位按权重从高到低分配，同权重顺序稳定', () => {
+    const r = ratios => ({ allocationMode: 'ratio', ratios });
+    assert.deepEqual(resourceFieldTargets(r({ fuel: 0, seeds: 1, tech: 3 }), 6), { 汽油: 0, 种子: 1, 公会科技点: 5 });
+    assert.deepEqual(resourceFieldTargets(r({ fuel: 0, seeds: 1, tech: 2 }), 10), { 汽油: 0, 种子: 3, 公会科技点: 7 });
+    assert.deepEqual(resourceFieldTargets(r({ fuel: 1, seeds: 2, tech: 3 }), 5), { 汽油: 0, 种子: 2, 公会科技点: 3 });
+    assert.deepEqual(resourceFieldTargets(r({ fuel: 1, seeds: 1, tech: 1 }), 2), { 汽油: 1, 种子: 1, 公会科技点: 0 });
+    assert.deepEqual(resourceFieldTargets(r({ fuel: 0, seeds: 0, tech: 0 }), 10), { 汽油: 0, 种子: 0, 公会科技点: 0 });
+    assert.deepEqual(resourceFieldTargets(r({ fuel: 1, seeds: 2, tech: 3 }), 0), { 汽油: 0, 种子: 0, 公会科技点: 0 });
+  });
+  test('固定配额按配置的块数计算，保存、导出、暂停保留两套数值和舰队选择', () => {
     const s = defaultSettings();
-    Object.assign(s.resourceFields, { enabled: true, preferredResource: '种子', fleetIds: ['2远征船'], reserveFleetCount: 0, minLevel: 6 });
+    Object.assign(s.resourceFields, { enabled: true, refillAfterLoss: true, allocationMode: 'quota', quotas: { fuel: 0, seeds: 5, tech: 1 }, fleetIds: ['2远征船'], reserveFleetCount: 0, minLevel: 6 });
+    for (const capacity of [5, 10]) assert.deepEqual(resourceFieldTargets(s.resourceFields, capacity), { 汽油: 0, 种子: 5, 公会科技点: 1 });
     assert(hasExtraWork(s));
     const saved = saveAutomationSettings('new', s, { file, revision: 0 });
     assert.deepEqual(loadAutomationSettings('new', { file }).settings.resourceFields, s.resourceFields);
@@ -47,7 +94,9 @@ try {
     assert.equal(s.resourceFields.enabled, true);
   });
   test('空舰队、非法目标和参数边界不能开启自动占领', () => {
-    for (const patch of [{ enabled: true }, { preferredResource: '钻石' }, { fleetIds: ['not-a-fleet'] },
+    for (const patch of [{ enabled: true }, { refillAfterLoss: 'true' }, { allocationMode: 'absolute' }, { preferredResource: '钻石' }, { fleetIds: ['not-a-fleet'] },
+      { ratios: { fuel: 3, seeds: -1, tech: 6 } }, { ratios: { fuel: 3, seeds: 1, tech: 6, diamond: 1 } },
+      { quotas: { fuel: 3, seeds: 1.5, tech: 6 } }, { ratios: { fuel: 0, seeds: 1 } }, { quotas: null },
       { minDurabilityPercent: 0 }, { minDurabilityPercent: 101 }, { reserveFleetCount: -1 }, { reserveFleetCount: 4 },
       { minLevel: 0 }, { checkEverySeconds: 29 }, { checkEverySeconds: 3601 }, { fleetIds: ['1远征船', '1远征船'] }]) {
       const s = defaultSettings(); Object.assign(s.resourceFields, patch);

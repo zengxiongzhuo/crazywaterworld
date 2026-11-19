@@ -129,17 +129,18 @@ test('六格排队且只有一个计时项时只使用一个生产位', () => {
   assert.equal(value.expiresAt, null);
 });
 
-test('月卡第二生产位必须同时具备现场并行计时证据', () => {
+test('月卡第二生产位在空厂或只有一件在产时也可用', () => {
   const value = timing({ monthCards: { cardItem: [{ type: 1, endTime: 5000 }] } });
-  const one = value.lanes(building([job(0, 1100), job(1)]));
-  assert.equal(one.count, 1);
-  assert.equal(one.estimated, true);
-  assert.equal(one.expiresAt, null);
-  const two = value.lanes(building([job(0, 1100), job(1, 1200), job(2)]));
-  assert.equal(two.count, 2);
-  assert.equal(two.estimated, false);
-  assert.equal(two.expiresAt, 5000);
-  assert.equal(two.afterExpiry, 1);
+  for (const queue of [[], [job(0, 1100)], [job(0, 1100), job(1, 1200), job(2)]]) {
+    const lanes = value.lanes(building(queue));
+    assert.equal(lanes.count, 2);
+    assert.equal(lanes.estimated, false);
+    assert.equal(lanes.expiresAt, 5000);
+    assert.equal(lanes.afterExpiry, 1);
+  }
+  assert.equal(timing({ monthCards: [{ type: 2, endTime: -1 }] }).lanes(building()).count, 1);
+  assert.equal(timing({ monthCards: [{ type: 1, endTime: 1000 }] }).lanes(building()).count, 1);
+  assert.equal(timing({ monthCards: [{ type: 1, endTime: -1 }, { type: 2, endTime: -1 }] }).lanes(building()).count, 2);
 });
 
 test('永久月卡保留双位，过期与未知权益禁止延续额外生产位', () => {
@@ -162,9 +163,17 @@ test('失效计时和未读取服务端时间不会增加并行数量', () => {
   const result = timing({ serverNow: undefined }).lanes(building([job(0, 1100), job(1, 1200)]));
   assert.equal(result.count, 1);
   assert.equal(result.estimated, true);
-  assert.equal(timing().lanes(building()).source, 'default-estimate');
+  assert.equal(timing({ monthCards: undefined }).lanes(building()).source, 'default-estimate');
   assert.equal(timing().lanes(building([job(0, 1100), job(0, 1200)])).count, 1);
   assert.equal(timing().lanes(building([{ idx: 0, finishTime: 1100 }, job(1, 1200)])).count, 1);
+});
+
+test('月卡到期前排队的短任务不能越过等常驻位的长任务', () => {
+  const value = timing({ effects: [], monthCards: [{ type: 1, endTime: 3200 }] });
+  const queue = [job(47, 1200), job(48, undefined, '面包'), job(49)];
+  const { jobs, finishes } = value.factoryQueue(building(queue));
+  assert.deepEqual(jobs.map(entry => entry.start), [1000, 1200, 1200]);
+  assert.deepEqual(finishes, [6600, 3000]);
 });
 
 test('从连续队头完成时刻差取实测，重复推送不会重复计样', () => {

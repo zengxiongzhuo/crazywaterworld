@@ -16,18 +16,19 @@ function accountAddChanged(channel, phase, { busy = false, account = null } = {}
 function renderAccountAdd() {
   const state = accountAddState;
   if (!state) return;
-  const names = { alipay: '支付宝扫码登录', phone: 'APP 账号登录', wechat: '电脑微信登录', douyin: '电脑抖音采集' };
+  const names = { 'wechat-qr': '微信扫码登录', alipay: '支付宝扫码登录', phone: 'APP 账号登录', wechat: '电脑微信登录', douyin: '电脑抖音采集' };
   const channel = state.channel;
   const capture = ['wechat', 'douyin'].includes(channel);
   const completed = state.phase === 'saved';
   const locked = state.busy || state.cleaning;
   $('account-add-title').textContent = channel ? names[channel] : '添加账号';
   $('account-add-step').textContent = !channel ? '选择登录渠道' : completed ? '添加完成'
-    : (channel === 'phone' && state.phase === 'selecting') || (channel === 'alipay' && state.phase === 'captured') ? '选择区服和角色'
+    : (channel === 'phone' && state.phase === 'selecting') || (['alipay', 'wechat-qr'].includes(channel) && state.phase === 'captured') ? '选择区服和角色'
       : capture && state.phase === 'captured' ? '验证账号并完成清理'
         : capture ? '采集游戏登录信息' : '登录验证';
   $('account-add-channels').hidden = Boolean(channel);
   $('account-add-alipay').hidden = channel !== 'alipay';
+  $('account-add-wechat').hidden = channel !== 'wechat-qr';
   $('account-add-phone').hidden = channel !== 'phone';
   $('account-add-capture').hidden = !capture;
   $('cap-start').hidden = channel !== 'wechat';
@@ -59,6 +60,7 @@ async function leaveAccountAdd(close) {
   try {
     let cleared = true;
     if (state.channel === 'alipay') cleared = await resetAlipayLogin();
+    else if (state.channel === 'wechat-qr') cleared = await resetWechatLogin();
     else if (state.channel === 'phone') cleared = await resetPhoneLogin();
     else if (state.channel) cleared = await resetAccountAddCapture();
     if (cleared === false) {
@@ -95,10 +97,10 @@ for (const button of document.querySelectorAll('#account-add-channels [data-logi
   button.onclick = () => {
     if (!$('account-add-dialog').open || accountAddState.channel || accountAddState.cleaning) return;
     const channel = button.dataset.loginChannel;
-    if (!['alipay', 'phone', 'wechat', 'douyin'].includes(channel)) return;
+    if (!['alipay', 'phone', 'wechat', 'douyin', 'wechat-qr'].includes(channel)) return;
     Object.assign(accountAddState, { channel, phase: 'entry', busy: false, account: null, feedback: '' });
     renderAccountAdd();
-    const target = { alipay: 'alipay-start', phone: 'phone-account', wechat: 'cap-start', douyin: 'cap-douyin' };
+    const target = { 'wechat-qr': 'wechat-start', alipay: 'alipay-start', phone: 'phone-account', wechat: 'cap-start', douyin: 'cap-douyin' };
     $(target[channel]).focus();
     if (channel === 'phone') void refreshPhoneDevice();
     else if (channel === 'wechat' || channel === 'douyin') void pollCapture();

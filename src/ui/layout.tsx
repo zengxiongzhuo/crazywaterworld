@@ -1,6 +1,6 @@
 import * as React from "react"
 import { renderToStaticMarkup } from "react-dom/server"
-import { Boxes, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, LayoutDashboard, Monitor, Moon, MoreHorizontal, ScrollText, Settings2, Ship, Sun, Swords, Trophy, UsersRound, X } from "lucide-react"
+import { Boxes, Building2, CalendarDays, Check, ChevronDown, CircleUserRound, Download, LayoutDashboard, Monitor, Moon, MoreHorizontal, RefreshCw, ScrollText, Settings2, Ship, Sun, Swords, Trophy, UsersRound, X } from "lucide-react"
 import { Button } from "./button"
 import { Badge } from "./badge"
 import { Card, CardHeader, CardTitle, CardContent, CardFooter } from "./card"
@@ -27,6 +27,7 @@ export function chrome() {
     <div className="headline">
       <div className="mast">
         <span className="mast-icon"><Ship aria-hidden="true" /></span><h1>疯狂水世界</h1><span className="brand-label">航行控制台</span>
+        <Button id="console-version-open" type="button" variant="outline" size="sm" hidden aria-haspopup="dialog" aria-controls="console-version-warning"><RefreshCw aria-hidden="true" />页面已过期</Button>
       </div>
       <div className="connection">
         <span id="busy" className="sr-only" role="status" aria-live="polite" aria-atomic="true">未连接</span>
@@ -95,6 +96,50 @@ export function journal() {
 
 export function dialogs() {
   return renderToStaticMarkup(<>
+    <dialog id="console-version-warning" aria-labelledby="console-version-title" aria-describedby="console-version-description">
+      <DialogHeader>
+        <DialogTitle id="console-version-title" tabIndex={-1} autoFocus>需要刷新控制台</DialogTitle>
+        <p id="console-version-description" className="dim">控制台已更新或重启。刷新后可继续保存修改和启动任务。</p>
+      </DialogHeader>
+      <div className="version-draft">
+        <p>未保存的修改仍保留在本页。刷新前，可返回页面复制需要的内容。</p>
+        <Button id="console-version-download" type="button" variant="outline" size="sm"><Download aria-hidden="true" />下载游戏配置草稿</Button>
+      </div>
+      <details id="console-version-account">
+        <summary>当前账号操作</summary>
+        <div className="bar">
+          <Button id="console-version-stop" type="button" variant="outline" size="sm">停止当前账号挂机</Button>
+          <Button id="console-version-disconnect" type="button" variant="outline" size="sm">断开当前账号</Button>
+        </div>
+        <p id="console-version-result" role="status" className="dim" />
+      </details>
+      <div className="version-footer">
+        <Button type="button" id="console-version-dismiss" variant="outline">返回页面</Button>
+        <Button type="button" id="console-version-reload">刷新页面</Button>
+      </div>
+    </dialog>
+    <dialog id="guild-tech-upgrade-dialog" aria-labelledby="guild-tech-upgrade-title" aria-describedby="guild-tech-levels">
+      <DialogHeader>
+        <DialogTitle id="guild-tech-upgrade-title" />
+        <p id="guild-tech-levels" className="dim" />
+      </DialogHeader>
+      <form id="guild-tech-upgrade-form">
+        <div id="guild-tech-target-field" className="guild-tech-target-field">
+          <label htmlFor="guild-tech-target">目标等级</label>
+          <Input id="guild-tech-target" type="number" step="1" required />
+          <Button id="guild-tech-highest" type="button" variant="outline" size="sm" />
+        </div>
+        <dl className="guild-tech-quote">
+          <div><dt>预计消耗</dt><dd id="guild-tech-estimate" /></div>
+          <div><dt id="guild-tech-balance-label">当前余额</dt><dd id="guild-tech-balance" /></div>
+        </dl>
+        <p id="guild-tech-feedback" className="dim" role="status" />
+        <div className="guild-tech-dialog-actions">
+          <Button id="guild-tech-dismiss" type="button" variant="outline">取消</Button>
+          <Button id="guild-tech-submit" type="submit">开始升级</Button>
+        </div>
+      </form>
+    </dialog>
     <dialog id="modal" aria-labelledby="m-title">
       <DialogHeader><DialogTitle id="m-title" /></DialogHeader>
       <div id="m-body" />
@@ -122,6 +167,7 @@ export function templates() {
   return renderToStaticMarkup(<>
     <template id="ui-table"><Table><TableHeader><TableRow><TableHead /></TableRow></TableHeader><TableBody><TableRow><TableCell /></TableRow></TableBody></Table></template>
     <template id="ui-button"><Button variant="outline" size="sm" /></template>
+    <template id="ui-confirm"><Button size="sm" /></template>
     <template id="ui-select"><NativeSelect size="sm" /></template>
     <template id="ui-number"><Input type="number" /></template>
     <template id="ui-delete"><Button variant="destructive" size="sm" /></template>

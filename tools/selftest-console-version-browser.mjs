@@ -63,6 +63,9 @@ try {
   };
   await openSettings();
   const budget = page.locator('#config-field-resources-diamondDailyLimit');
+  const warning = page.locator('#console-version-warning'), reopen = page.locator('#console-version-open');
+  assert.equal(await warning.isVisible(), false);
+  assert.equal(await reopen.isVisible(), false);
   const oldVersion = await page.evaluate(() => window.cwConsoleVersion.version);
   assert(oldVersion); assert.equal(await page.evaluate(() => window.cwConsoleVersion.isStale()), false);
   const before = fs.readFileSync(settingsFile()), initialRevision = loadAutomationSettings(id).revision;
@@ -84,20 +87,35 @@ try {
   await open();
   assert.equal(base, originalBase, '重启复用原端口且保留旧tab');
   await page.waitForFunction(() => window.cwConsoleVersion.isStale(), null, { timeout: 8000 });
-  const banner = page.locator('#console-version-warning'); await banner.waitFor({ state: 'visible' });
-  assert.match(await banner.textContent(), /保留.*草稿|草稿已保留/);
+  await warning.waitFor({ state: 'visible' });
+  assert(await warning.evaluate(dialog => dialog.matches(':modal')), '过期提示应打开为模态弹窗');
+  await warning.getByRole('heading', { name: '需要刷新控制台' }).waitFor();
+  assert.match(await warning.textContent(), /草稿/);
+  assert.equal(await warning.getByRole('button', { name: '断开当前账号' }).isVisible(), false);
   assert.match(await page.locator('#config-state').textContent(), /页面已过期.*草稿已保留/);
   assert.equal(await page.evaluate(() => window.cwConsoleVersion.version), oldVersion, '旧页身份不能随响应静默升级');
   assert.equal(await budget.inputValue(), '1234');
   assert.equal(await page.evaluate(() => configIsDirty()), true);
   assert.equal(await page.evaluate(() => configEditor.draft.resources.diamondDailyLimit), 1234);
+  await page.keyboard.press('Escape');
+  await warning.waitFor({ state: 'hidden' });
+  await reopen.waitFor({ state: 'visible' });
+  await page.evaluate(() => call('/api/loop'));
+  assert.equal(await warning.isVisible(), false, '关闭后重复轮询不应再抢占页面');
+  assert.equal(await budget.inputValue(), '1234');
+  assert.equal(await page.evaluate(() => window.cwConsoleVersion.isStale()), true);
+  await reopen.click();
+  await warning.getByRole('button', { name: '返回页面' }).click();
+  await warning.waitFor({ state: 'hidden' });
+  assert(await reopen.evaluate(button => button === document.activeElement), '手动打开后关闭应回到触发按钮');
+  await reopen.click();
   await page.waitForTimeout(1600);
   assert.equal(writes.length, offlineWrites, '轮询发现版本变化后不能自动重发旧草稿');
   assert.deepEqual(fs.readFileSync(settingsFile()), before);
   console.log('通过：同端口后台重启由轮询识别，旧草稿保留，自动保存停止');
 
   const downloadPromise = page.waitForEvent('download');
-  await banner.getByRole('button', { name: '下载游戏配置草稿', exact: true }).click();
+  await warning.getByRole('button', { name: '下载游戏配置草稿', exact: true }).click();
   const download = await downloadPromise, downloadedFile = path.join(directory, 'draft.json');
   await download.saveAs(downloadedFile);
   assert.equal(JSON.parse(fs.readFileSync(downloadedFile)).settings.resources.diamondDailyLimit, 1234);
@@ -119,25 +137,45 @@ try {
     assert.notEqual(result.version, oldVersion);
   }
   assert.deepEqual(fs.readFileSync(settingsFile()), before);
+  const accountActions = warning.locator('summary', { hasText: '当前账号操作' });
+  await accountActions.click();
   const stopResponse = page.waitForResponse(response => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/loop/stop');
-  await banner.getByRole('button', { name: '停止当前账号挂机', exact: true }).click();
+  await warning.getByRole('button', { name: '停止当前账号挂机', exact: true }).click();
   assert.equal((await stopResponse).status(), 200);
   assert.equal(app.sessions.get(id).loop.running, false);
   assert.equal(loadAutomationSettings(id).revision, initialRevision);
   console.log('通过：草稿可下载，旧版本/缺版本真实浏览器请求均409，停止接口仍200');
 
   fs.mkdirSync(path.resolve('output/playwright'), { recursive: true });
-  await banner.screenshot({ path: path.resolve('output/playwright/console-version-stale.png') });
+  await accountActions.click();
+  await warning.screenshot({ path: path.resolve('output/playwright/console-version-stale.png') });
+  await page.setViewportSize({ width: 360, height: 640 });
+  await accountActions.click();
+  const fits = await warning.evaluate(dialog => {
+    const box = dialog.getBoundingClientRect();
+    return box.left >= 0 && box.right <= innerWidth && box.top >= 0 && box.bottom <= innerHeight
+      && dialog.scrollWidth <= dialog.clientWidth + 1;
+  });
+  assert(fits, '手机宽度下展开账号操作后弹窗应在视口内且无需横向滚动');
+  await accountActions.click();
+  await warning.screenshot({ path: path.resolve('output/playwright/console-version-stale-mobile.png') });
+  await warning.getByRole('button', { name: '返回页面' }).click();
+  await warning.waitFor({ state: 'hidden' });
+  const entryBox = await reopen.boundingBox();
+  assert(entryBox && entryBox.x >= 0 && entryBox.x + entryBox.width <= 360, '手机页头可见过期提示入口');
+  await reopen.click();
+  await page.setViewportSize({ width: 1280, height: 900 });
   let refreshConfirmed = false;
   page.once('dialog', async dialog => { assert.match(dialog.message(), /保留.*刷新/); refreshConfirmed = true; await dialog.accept(); });
-  await Promise.all([page.waitForNavigation(), banner.getByRole('button', { name: '刷新页面', exact: true }).click()]);
+  await Promise.all([page.waitForNavigation(), warning.getByRole('button', { name: '刷新页面', exact: true }).click()]);
   assert.equal(refreshConfirmed, true, '刷新前应提醒保留未保存内容');
   await openSettings();
   const newVersion = await page.evaluate(() => window.cwConsoleVersion.version);
   assert.notEqual(newVersion, oldVersion); assert.equal(newVersion, blocked[0].version);
   assert.equal(await page.evaluate(() => window.cwConsoleVersion.isStale()), false);
-  assert.equal(await page.locator('#console-version-warning').count(), 0);
+  assert.equal(await warning.isVisible(), false);
+  assert.equal(await reopen.isVisible(), false);
   assert.equal(await budget.inputValue(), String(settings.resources.diamondDailyLimit), '刷新加载已保存配置，旧草稿留在下载文件');
   const savedResponse = page.waitForResponse(response => response.request().method() === 'POST'
     && new URL(response.url()).pathname === '/api/settings' && response.status() === 200);

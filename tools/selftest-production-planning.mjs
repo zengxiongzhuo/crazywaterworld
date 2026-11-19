@@ -89,12 +89,20 @@ test('单批五份按全部订单合并取整，并行农田按实际数量', ()
   assert.equal(result.timeline.filter(job => job.kind === 'production').length, 2);
 });
 
-test('设施升级期间保留队列收益，新开工等待升级结束', () => {
+test('已建工厂升级期间继续已有生产，并在生产位释放时开工', () => {
   const { snapshot, plan } = fixture();
   snapshot.factories[0].upgradingUntil = 1050;
   snapshot.factories[0].queue = [{ id: 'q1', productId: '面包', num: 1, finishTime: 1020 }];
   snapshot.buildings[0].factory.factoryQ = [{ productId: '面包', finishTime: 1020 }];
-  assert.equal(plan().completionAt, 1110);
+  assert.equal(plan().completionAt, 1080);
+});
+
+test('升级中的农田仍需竣工才能播种', () => {
+  const { snapshot, plan } = fixture();
+  snapshot.inventory = [{ id: '小麦种子', num: 1 }];
+  snapshot.orders[0].requirements = [{ id: '小麦', num: 1 }];
+  snapshot.farms[0].upgradingUntil = 1050;
+  assert.equal(plan().completionAt, 1080);
 });
 
 test('工厂按各自实测时长排产', () => {
@@ -161,6 +169,25 @@ test('月卡位到期后现有排队任务转入常驻位，已启动任务保�
   assert.equal(queued.finishAt, 1080);
   assert.deepEqual(model.input.incoming.slice(0, 2).map(job => job.readyAt).sort(), [10, 20]);
   assert.equal(model.input.machines[1].availableUntil, 30);
+});
+
+test('升级中的空厂依据有效月卡同时开工两件，只有一件在产时第二位可立即接单', () => {
+  const { snapshot, settings } = fixture();
+  const cardConfig = { ...config, tables: { ...config.tables,
+    MonthCardCfg: table([{ id: '普通月卡', effectList: [['第二生产位', 1]] }]) } };
+  snapshot.factories[0].upgradingUntil = 2000;
+  snapshot.timing.monthCards = { cardItem: [{ type: 1, endTime: 1500 }] };
+  const plan = () => planProduction(snapshot, cardConfig, settings);
+  const empty = plan();
+  assert.equal(empty.completionAt, 1060);
+  assert.deepEqual(empty.timeline.map(job => job.startAt), [1000, 1000]);
+  assert.equal(new Set(empty.timeline.map(job => job.machineId)).size, 2);
+  snapshot.timing.monthCards.cardItem[0].endTime = 1000;
+  assert.equal(plan().completionAt, 1120);
+  snapshot.timing.monthCards.cardItem[0].endTime = -1;
+  snapshot.factories[0].queue = [{ id: 'q1', productId: '面包', num: 1, finishTime: 1020 }];
+  snapshot.buildings[0].factory.factoryQ = [{ idx: 5, productId: '面包', finishTime: 1020 }];
+  assert.equal(plan().completionAt, 1060);
 });
 
 test('其他配方限制继续给出对应订单的真实阻塞', () => {

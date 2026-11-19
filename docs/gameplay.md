@@ -469,6 +469,9 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - 人口由客户端计算，`population = GameParamCfg 初始人口 + Σ 已建成民居当前等级的「人口增加」`，
   `maxPopulation = GameParamCfg 初始人口上限(10) + Σ「人口上限」`。协议里没有，计划器只能按同样口径离线复算。
 - `DispFactory{factoryQ:[{idx, productId, finishTime}], finishedProducts[], autoProductId}`。
+- 微信 v76 客户端在已建成工厂升级时仍可打开 `FactoryPop`。普通下单检查当前建筑等级、配方材料、库存和队列空间。首次建造中的 0 级地块尚不能生产。
+- `TipsDescCfg` 的「自动生产」说明和 `MonthCardCfg.effectList` 确认有效普通月卡提供「第二生产位」，两件产品可同时加工。当前高级月卡和 VIP 等级表均未单独提供这一效果。月卡按服务器时间判断，`endTime = -1` 表示永久。
+- 同一工厂按 `factoryQ` 的数组顺序排队，`idx` 标识任务。每个已开工任务采用各自的 `finishTime`。临近月卡到期时，尚未开工的任务仅在预计能于到期前完成时计入第二位。跨到期时的实际开工行为尚无服务端样本。
 - 常量散在几张 param 表里：`制造位上限=6` 在 `BuildingProduceParamCfg`，
   `产品存量初始上限=50`、`初始人口上限=10` 在 `GameParamCfg`，`订单每日上限=40` 在 `OrderParamCfg`。
   按名字查时要跨表查，只查一张表会拿到 0（本轮踩过：制造位上限读成 0，导致所有工厂都被判定为队列已满）。
@@ -494,11 +497,7 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 `finishedProducts` 立刻清空，`生鱼片 18→19`、`淡水 15→16`、`布匹 12→13`、`救生衣 9→10`，
 响应体是 `{"products":{"asset":[{"type":0,"id":"生鱼片","num":1}]}}`。
 
-实测（排产）：`StartFactoryProduceRequest` 入队时 `finishTime` 就是当前时刻，
-5 秒内该队列项消失并出现在 `finishedProducts` —— 即这条请求一次只产 1 件且**即时完成**，
-`BuildingProduceCfg.produceTime`（90/300 秒）在界面上是倒计时展示，不是这条请求的等待时间。
-所以循环里每轮「收成品 + 排产」是正常的一进一出，不是重复发同一个请求：
-只有当队列里已经有同一个 `productId` 时计划器才会跳过（此时它会去挑别的配方）。
+每条 `StartFactoryProduceRequest` 排入一件产品。早期账号实测中，有任务在入队后 5 秒内就进入了 `finishedProducts`。排产核对同时检查在产队列和待收数量，实际开工的任务以各自的服务端 `finishTime` 为准。需求缺多件时，同一产品可在队列中出现多次。
 
 ### 12.4 资源田：静态数据在客户端地图 bundle 里
 
@@ -753,6 +752,16 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 - 维修门槛沿用配置“攻城战消耗耐久”和用户比例，不将其等同所有战斗实际扣除：配置说明对城防 NPC 与对玩家舰队的消耗不同，未发现单独的防守耐久参数。
 
 验证使用虚构账号和真实协议编解码的离线夹具，未进行真实账号城战派遣。
+
+### 世界地图点城操作
+
+手动调动使用 `MoveFleetsToCityRequest`，每次只发送玩家选中的一支舰队。可随时免费前往其他本盟城市，进攻使用本盟宣战记录、当前城战时间和距离报价。选舰时同时读取本人舰队和已建成的舰队编队，并排除驻外、已预留和派遣结果待确认的舰队。手动进攻的汽油计入城战用量，次数单独记录。
+
+宣战使用 `DeclareWarRequest { cityId }`。界面从 `GuildInfoResponse.myTitle` 核对盟主或副盟主身份，同时检查本盟已有目标数、相邻领地、黑潮范围、赛季城市等级和干扰器。提交后读取 `WarDeclarationResponse.declarations`，匹配本盟和目标城后显示成功。
+
+本盟城池受宣战或已交战时，手动调动显示为「增援」。高级募兵使用 `CityRecruitDefenceRequest`，资格取自 `VipLevelCfg`，每枚令牌的增兵数取自 `GuildParamCfg`。发出后核对本城守军增长和个人联盟募兵令扣减。
+
+设置联盟集结使用 `SetAssembleCityRequest`，回读 `WarDeclarationResponse.assembleCityId`。可在本盟已宣战或正在受攻的非主城间切换。撤销宣战使用 `CancelDeclareWarRequest`，本盟至少保留一个进攻目标，费用取自 `WorldParamCfg` 的「取消宣战消耗」。原宣战期内目标消失、城池归属相符且个人钻石扣减符合报价后才确认。
 
 ## 16. 藏品养成协议（v76）
 

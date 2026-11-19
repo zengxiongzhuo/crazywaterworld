@@ -4,6 +4,7 @@ import { reconcilePirateFlights } from './pirates.mjs';
 import { emitDiagnostic } from './trace-log.mjs';
 import { fleetRepairConfirmed } from './fleet-repair-confirmation.mjs';
 import { fleetSpeedConfirmed } from './fleet-speed-evidence.mjs';
+import { forgetReleasedResourceField } from './resource-field-history.mjs';
 
 const fleetKey = /^(?:fleet-speed|fleet-speed-wait|radar-send|world-boss|world-boss-lineup|pirate-first|cityWar|treasureRepair|treasureFollow|treasureSpeed|treasure|silicon|silicon-repair|silicon-retreat|silicon-speed|resource-field):(\d+):/;
 const repairKinds = new Set(['cityRepair', 'treasureRepair']);
@@ -50,6 +51,13 @@ export function fleetAtHome(fleet) {
   return (
     fleet?.state === 1 && fleet.curGridIdx === 0 && zeroId(fleet.treasureLootUid) && !fleet.chipWar?.rewardTs
   );
+}
+
+export function cityDispatchObserved(fleet, details) {
+  return (fleet.state === 2 && fleet.targetCityId === details.cityId) ||
+    (fleet.cityId === details.cityId && ([3, 5].includes(fleet.state) ||
+      (fleet.state === 1 && fleet.curGridIdx > 0) ||
+      (details.manualCityMove && details.origin > 0 && details.origin !== details.cityId && fleetAtHome(fleet))));
 }
 
 export function treasureSpeedConfirmed(fleet, details) {
@@ -161,6 +169,7 @@ export function releaseResourceFieldReplacementLock(ledger, details) {
 export function cancelResourceFieldReplacement(ledger, key, record, now, reason) {
   if (!record?.details?.replacement || record.confirmed || ledger.keyRecords()[key]?.id !== record.id) return;
   const d = record.details;
+  forgetReleasedResourceField(ledger, d.worldId, d.playerId, d.replacement.grid);
   const historyKey = `resource-field-partial:${d.worldId}:${dayOf(now)}`;
   const history = { kind: 'resourceFieldReplacementResult', worldId: d.worldId,
     oldGrid: d.replacement.grid, newGrid: d.gridIdx, released: true, at: now, reason };
@@ -223,8 +232,9 @@ export function settleFleetSnapshot(
       // 自动占田关闭后仍结算手动出征；归队只能释放已确认派遣，未知请求继续保留。
       if (current?.confirmed && home && !(fleet.targetGridIdx ?? 0) && !fleet.autoFight?.isOn
         && fieldsSynced && integer(now) && current.details.active !== false) {
-        ledger.updateKeyDetails(key, { ...current.details, active: false, occupied, returnedAt: now });
-        changes.push({ key, reason: occupied ? '占田舰队已归队，释放舰队占用' : '占田舰队已归队，未确认占领，保留本日尝试记录' });
+        const everOccupied = occupied || current.details.occupied === true;
+        ledger.updateKeyDetails(key, { ...current.details, active: false, occupied, everOccupied, returnedAt: now });
+        changes.push({ key, reason: everOccupied ? '占田舰队已归队，释放舰队占用' : '占田舰队已归队，未确认占领，保留本日尝试记录' });
       } else if (current?.confirmed && occupied && !current.details.occupied) {
         ledger.updateKeyDetails(key, { ...current.details, occupied: true });
         changes.push({ key, reason: '本人资源田列表确认占领，舰队尚未归队' });
@@ -368,9 +378,7 @@ export function settleFleetSnapshot(
       if (!confirmed) {
         const observed = repairKinds.has(d.kind)
           ? fleetRepairConfirmed(fleet, d, now)
-          : (fleet.state === 2 && fleet.targetCityId === d.cityId) ||
-            (fleet.cityId === d.cityId &&
-              ([3, 5].includes(fleet.state) || (fleet.state === 1 && fleet.curGridIdx > 0)));
+          : cityDispatchObserved(fleet, d);
         if (!observed) continue;
         ledger.resolveKey(key, true);
         confirmed = true;
@@ -468,6 +476,8 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
   if (!outstanding.length) return [];
   const job = (async () => {
     const kinds = new Set(outstanding.map(([, record]) => record.details.kind));
+    const scope = worldId + ':' + owner;
+    const history = owner && kinds.has('resourceFieldDispatch') && ledger.resourceFieldHistory?.(scope);
     const readErrors = [];
     const read = async (name) => {
       try {
@@ -506,6 +516,19 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
     };
     // 先按本人归队状态释放舰队，再补读战果，历史战报分页不能延长舰队占用。
     const changes = settleFleetSnapshot(ledger, { ...snapshot, allowBossTimeout: false });
+    if (history && changes.length && Array.isArray(snapshot.resourceFields)) {
+      const records = ledger.keyRecords();
+      let updated = false;
+      for (const { key } of changes) {
+        const record = records[key], d = record?.details;
+        if (d?.kind !== 'resourceFieldDispatch' || d.playerId !== owner || !d.resourceId || !d.occupied || record.id !== baseline[key]?.id
+          || history.owned[d.gridIdx] || history.settled?.[d.gridIdx] || !snapshot.resourceFields.some(f => f.gridIdx === d.gridIdx)) continue;
+        // The shared fleet check can be the only observer of a victory before the field is lost.
+        (history.settled ??= {})[d.gridIdx] = d.resourceId;
+        updated = true;
+      }
+      if (updated) ledger.saveResourceFieldHistory(scope, history);
+    }
     let reports;
     const needReport = outstanding
       .map(([, r]) => r)

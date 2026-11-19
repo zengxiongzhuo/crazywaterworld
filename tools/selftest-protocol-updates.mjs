@@ -118,13 +118,13 @@ try {
     assert.equal(String(decoded.sequence), '0');
     assert.equal(getProtocolSource(protocol).packageVersion, '78');
   });
-  test('空版本目录不遮蔽现有协议，最新主包缺分包则拒绝旧版回退', () => {
+  test('空版本目录不遮蔽现有协议，两个读取入口均拒绝缺分包后的旧版回退', () => {
     const next = path.join(packageRoot, '79');
     fs.mkdirSync(next);
     assert.equal(protocolSourceInfo().packageVersion, '78');
     fs.writeFileSync(path.join(next, '__APP__.wxapkg'), 'synthetic installed main package');
     assert.throws(() => getProtocol(), error => error.code === 'PROTOCOL_UPDATE_FAILED' && /79.*协议分包尚未下载/.test(error.message));
-    assert.match(readProtocolSource(), /int32\(body.version \|\| 78\)/, '历史读取接口保留兼容回退');
+    assert.throws(() => readProtocolSource(), /79.*协议分包尚未下载/, '直接读取与连接入口使用同一协议选择规则');
     assert.equal(version(getProtocol(firstFile)), 74, '显式选择仍优先');
     writePackage(79);
     assert.equal(version(getProtocol()), 79);

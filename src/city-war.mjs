@@ -1,4 +1,4 @@
-import {fleetRecordReason,legacyFleetReservationReason,reserveDispatch} from './fleet-availability.mjs';
+import {fleetRecordReason,fleetStateName,legacyFleetReservationReason,reserveDispatch} from './fleet-availability.mjs';
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
 // 按原生委任策略接管后的城战攻守。只移动本人舰队和正常维修，不宣战。
 import { exactAutomationId } from './automation-policy.mjs';
@@ -11,7 +11,6 @@ const nowOf = client => Math.floor((Date.now() + (client.serverClockOffsetMs || 
 const day = time => Math.floor((time + 28800) / 86400);
 const fleetNo = id => /^([1-9]\d*)远征船$/.exec(id ?? '')?.[1];
 const nameOf = id => '远征舰队 ' + (fleetNo(id) || '?') + ' 队';
-const stateName = fleet => ({ 1: fleet.curGridIdx > 0 ? '驻守在外' : '空闲', 2: '行军中', 3: '战斗中', 4: '维修中', 5: '排队中' })[fleet.state] || '未知';
 const active = new WeakSet();
 const rejected = new WeakMap();
 const nativeRejected = new WeakMap();
@@ -194,7 +193,7 @@ function fleetGate(fleet, snapshot, p) {
   if (!fleetNo(fleet.buildingId) || !(building?.level > 0)) return '远征船尚未建成或无法识别';
   if (!(building.fleet?.formation?.heroPositions ?? []).some(row => row.heroId)) return '请先保存舰队英雄编队';
   if (fleet.owner && exactAutomationId(fleet.owner.playerId) !== snapshot.playerId) return '舰队归属不符';
-  if (fleet.state !== 1) return '舰队' + stateName(fleet);
+  if (fleet.state !== 1) return '舰队' + fleetStateName(fleet);
   if (fleet.treasureLootUid > 0) return '舰队正在参与巨轮';
   if (fleet.curGridIdx > 0) return '舰队驻守在外';
   if (fleet.chipWar?.rewardTs > 0) return '舰队仍有矿场任务';
@@ -236,7 +235,7 @@ export function planCityWar(snapshot, settings, { usage = { counters: {} }, keys
   for (const id of p.fleetIds) {
     const fleet = snapshot.fleets.find(row => row.buildingId === id), native = fleet ? nativeState(fleet, snapshot, p) : null;
     if (!fleet) continue;
-    plan.fleets.push({ buildingId: id, role: fleetRole(p, id), name: nameOf(id), state: fleet ? stateName(fleet) : '未取得', used: fleet?.autoFight?.todayTimes ?? null,
+    plan.fleets.push({ buildingId: id, role: fleetRole(p, id), name: nameOf(id), state: fleet ? fleetStateName(fleet) : '未取得', used: fleet?.autoFight?.todayTimes ?? null,
       limit: snapshot.nativeLimit, nativeMode: p.nativeCommissionLimit, nativeTarget: native?.target ?? null,
       durability: fleet?.durability, maxDura: fleet?.maxDura, reason: fleet ? fleetGate(fleet, snapshot, p) : '未取得舰队状态' });
   }

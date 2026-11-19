@@ -110,7 +110,7 @@ export async function runWeeklyActivity(client, protocol, config, player, {
     if (context.kind === 'farm' || context.kind === 'order') {
       const allowed = kind => active() && (context.kind === 'farm' ? kind === 'farm' : ['finishOrder', 'speedUpProduce'].includes(kind));
       const survey = await surveyWorld(connection, protocol, { config, player, includeWeekOrder: true,
-        includeCargo: settings.cargo.enabled });
+        includeCargo: settings.cargo.enabled, includeProductionTiming: false });
       const plan = planWorld(survey, { config, settings, usage: ledger.snapshot(), enabled: allowed,
         allowSpeedUp: context.kind === 'farm' ? settings.weeklyActivity.farmSpeedUp : settings.factory.speedUp || settings.factory.speedUpSources.length > 0 });
       await runWorldRound(connection, protocol, plan, { config, player, settings, getSettings: current,
@@ -131,7 +131,7 @@ export async function runWeeklyActivity(client, protocol, config, player, {
       }
     } else if (context.kind === 'pet') {
       if (!settings.pet.species.length) note('请先在海兽配置选择培育物种和最高品质');
-      const water = await surveyWorld(connection, protocol, { config, player, includeWeekOrder: true });
+      const water = await surveyWorld(connection, protocol, { config, player, includeWeekOrder: true, includeProductionTiming: false });
       const snapshot = await surveyBaseAutomation(connection, protocol, config, player, settings, water, { ledger, enabled: active });
       const plan = planBaseAutomation(snapshot, config, settings, ledger.snapshot(), { petQualityOrder: settings.weeklyActivity.petQualityOrder });
       plan.actions = plan.actions.filter(step => ['petClaim', 'petBreed'].includes(step.kind));

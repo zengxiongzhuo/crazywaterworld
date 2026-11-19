@@ -1,7 +1,7 @@
 // Issue #32: production switches, shortest jobs, and bounded material planning.
 import assert from 'node:assert/strict';
 import { defaultSettings } from '../src/automation-settings.mjs';
-import { planWorld } from '../src/world.mjs';
+import { planWorld, surveyWorld } from '../src/world.mjs';
 
 let passed = 0;
 const test = (name, work) => { work(); passed++; console.log('通过：' + name); };
@@ -32,6 +32,105 @@ function fixture() {
   return { config, settings, stock, factory, survey, plan };
 }
 const products = plan => plan.actions.filter(step => step.request === 'StartFactoryProduceRequest').map(step => step.body.productId);
+
+const shortestFirst = ['短时品', '短时品', '长时品'];
+const parallelOrder = ['短时品', '长时品', '短时品'];
+function timedDemand() {
+  const f = fixture();
+  f.stock.set('短时品', 0);
+  Object.assign(f.settings.factory, { keepStock: 0, demandFirst: true, demandPriority: ['cargo', 'merchant'] });
+  f.config.tables.BuildingProduceCfg.data[0].produceTime = 4;
+  f.config.tables.BuildingProduceCfg.data[1].produceTime = 8;
+  f.config.tables.MonthCardCfg = table([{ id: '普通月卡', effectList: [['第二生产位', 1]] }]);
+  f.survey.cargoOrder = new Map([['短时品', 2], ['长时品', 1]]);
+  f.survey.productionTiming = { monthCards: { cardItem: [{ type: 1, endTime: -1 }] } };
+  return f;
+}
+
+test('双生产位把同一货单的 4、4、8 秒任务从 12 秒缩为 8 秒，单线保留短时优先', () => {
+  const f = timedDemand();
+  assert.deepEqual(products(f.plan()), parallelOrder);
+  for (const endTime of [99, 100, 105]) {
+    f.survey.productionTiming.monthCards.cardItem[0].endTime = endTime;
+    assert.deepEqual(products(f.plan()), shortestFirst);
+  }
+  f.survey.productionTiming.monthCards.cardItem = [];
+  assert.deepEqual(products(f.plan()), shortestFirst);
+});
+
+test('六格内枚举五件订单，混合顺序比短时优先或长时优先再快一秒', () => {
+  const f = timedDemand();
+  f.config.tables.BuildingProduceCfg.data[0].produceTime = 2;
+  f.config.tables.BuildingProduceCfg.data[1].produceTime = 3;
+  f.survey.cargoOrder = new Map([['短时品', 3], ['长时品', 2]]);
+  assert.deepEqual(products(f.plan()), ['短时品', '长时品', '短时品', '长时品', '短时品']);
+});
+
+test('双位派单尊重在产时刻、优先级、库存备货及同批原料限额', () => {
+  const f = timedDemand();
+  f.factory.factory.factoryQ = [{ idx: 0, productId: '旧产品', finishTime: 104 }];
+  assert.deepEqual(products(f.plan()), shortestFirst, '已有一位占用时换序无法更早齐套');
+  f.factory.factory.factoryQ = [];
+  f.survey.cargoOrder.delete('长时品');
+  f.survey.weekOrder.set('长时品', 1);
+  assert.deepEqual(products(f.plan()), shortestFirst, '低优先级订单不能插队');
+  f.survey.weekOrder.clear();
+  f.settings.factory.keepStock = 1;
+  assert.deepEqual(products(f.plan()), shortestFirst, '常规库存不能插队');
+  f.survey.cargoOrder.set('长时品', 1);
+  f.stock.set('木材', 2);
+  assert.deepEqual(products(f.plan()), ['短时品', '短时品']);
+});
+
+test('升级中按当前等级派单，初建和下一等级配方仍不可用', () => {
+  const f = timedDemand();
+  f.factory.buildStartTime = 60;
+  f.factory.buildFinishTime = 240;
+  assert.deepEqual(products(f.plan()), parallelOrder);
+  f.factory.level = 0;
+  assert.deepEqual(products(f.plan()), []);
+  f.factory.level = 1;
+  f.config.tables.BuildingProduceCfg.data[1].unlockLevel = 2;
+  assert.deepEqual(products(f.plan()), []);
+});
+
+{
+  const f = timedDemand();
+  f.config.tables.BuildingProduceParamCfg = table([{ paramName: '制造位上限', paramValue: 6 }]);
+  f.config.tables.GameParamCfg = table([{ paramName: '产品存量初始上限', paramValue: 50 }]);
+  const replies = {
+    OnWaterRequest: { building: [f.factory] }, AllItemRequest: { items: [{ itemId: '木材', num: 3 }] },
+    MonthCardRequest: f.survey.productionTiming.monthCards, GameEffectRequest: { effects: [] },
+  };
+  const protocol = Object.fromEntries(Object.keys(replies).flatMap(key => [[key, true], [key.replace('Request', 'Response'), true]]));
+  const calls = [];
+  const read = options => surveyWorld({ request: async key => { calls.push(key); return replies[key]; } },
+    protocol, { config: f.config, includeWeekOrder: false, ...options });
+  async function assign() {
+    const survey = await read();
+    survey.cargoOrders = [{ requirements: [...f.survey.cargoOrder].map(([id, num]) => ({ id, num })) }];
+    return products(planWorld(survey, { config: f.config, settings: f.settings, enabled: kind => kind === 'startProduce' }));
+  }
+  assert.deepEqual(await assign(), parallelOrder);
+  assert(calls.includes('MonthCardRequest'));
+  assert(calls.includes('GameEffectRequest'));
+  calls.length = 0;
+  replies.MonthCardRequest = { cardItem: [] };
+  assert.deepEqual(await assign(), shortestFirst);
+  assert(!calls.includes('GameEffectRequest'), '单生产位维持原队列顺序，无需额外读取耗时加成');
+  calls.length = 0;
+  await read({ ordersOnly: true });
+  await read({ includeProductionTiming: false });
+  assert(!calls.includes('MonthCardRequest'));
+  f.factory.factory.factoryQ = Array.from({ length: 5 }, (_, idx) => ({ idx, productId: '短时品' }));
+  await read();
+  assert(!calls.includes('MonthCardRequest'), '只剩一格时无需为换序读取权益');
+  replies.OnWaterRequest.building = [{ buildingId: '1民居', level: 1, factory: { factoryQ: [] } }];
+  await read();
+  assert(!calls.includes('MonthCardRequest'), '非加工建筑的空嵌套消息不算空闲工厂');
+  passed++;
+  console.log('通过：单座工厂的实时探测读取账号月卡，权益变化后重新派单');
+}
 
 test('备货先排短时品，达到水位后再排长时品，一轮填满六个空槽', () => {
   const f = fixture();

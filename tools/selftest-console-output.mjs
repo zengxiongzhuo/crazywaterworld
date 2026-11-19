@@ -19,6 +19,8 @@ class Terminal extends EventEmitter {
     this.chunks.push(text);
     if (this.isTTY) {
       for (let i = 0; i < text.length;) {
+        const osc = /^\u001b\][^\u0007]*\u0007/.exec(text.slice(i));
+        if (osc) { i += osc[0].length; continue; }
         const command = /^\u001b\[([\d;]*)([A-Za-z])/.exec(text.slice(i));
         if (command) {
           const values = command[1].split(';').map(Number), kind = command[2]; i += command[0].length;
@@ -26,6 +28,7 @@ class Terminal extends EventEmitter {
           else if (kind === 'H') { this.row = (values[0] || 1) - 1; this.column = (values[1] || 1) - 1; }
           else if (kind === 'J') this.screen = Array.from({ length: this.rows }, () => Array(this.columns).fill(' '));
           else if (kind === 'K') this.screen[this.row].fill(' ');
+          else if (kind === 'm') { /* SGR decoration does not occupy cells. */ }
           else assert.fail('未知终端命令 ' + command[0]);
           continue;
         }
@@ -51,6 +54,8 @@ class Terminal extends EventEmitter {
 const url = 'http://127.0.0.1:17323';
 const output = stream => createConsoleOutput({ stdout: stream, platform: 'win32', release: '10.0.26100', env: {} });
 const flush = async () => { for (let i = 0; i < 8; i++) await nextTurn(); };
+const links = text => [...text.matchAll(/\u001b\]8;;([^\u0007]+)\u0007\u001b\[1;36m([^\u001b]*)\u001b\[0m\u001b\]8;;\u0007/g)]
+  .map(([, target, label]) => ({ target, label }));
 let passed = 0;
 const test = async (name, work) => { await work(); passed++; console.log('通过：' + name); };
 
@@ -69,6 +74,7 @@ await test('顶部地址与提示固定，大量日志及同屏stderr只滚动�
   sink.start(url); await flush();
   const top = terminal.top, header = terminal.lines().slice(0, top);
   assert(header.join('').includes(url)); assert(header.join('').includes('Ctrl+C'));
+  assert.deepEqual(links(terminal.text()), [{ target: url, label: url }]);
   for (let i = 0; i < 100; i++) sink.write('运行日志第' + i + '轮');
   await flush();
   assert.deepEqual(terminal.lines().slice(0, top), header);
@@ -92,6 +98,60 @@ await test('窗口缩放重新计算中文标题行数，重绘最近日志且�
   assert(terminal.lines()[0].includes(url));
   assert(terminal.lines().some(line => line.includes('最近日志-19')));
   await sink.close();
+});
+
+await test('窄窗口中的每段地址都链接完整URL，缩放重绘仍保留相同文本', async () => {
+  const target = 'https://console.example.test:17323/a/very/long/path?account=demo#settings';
+  const terminal = new Terminal({ columns: 24, rows: 24 }), sink = output(terminal);
+  sink.start(target); await flush();
+  const first = links(terminal.text());
+  assert(first.length > 1);
+  assert(first.every(link => link.target === target));
+  assert.equal(first.map(link => link.label).join(''), target);
+  assert(terminal.lines().slice(0, terminal.top).join('').includes(target));
+  const before = terminal.chunks.length;
+  terminal.resize(140, 24); await flush();
+  assert.deepEqual(links(terminal.chunks.slice(before).join('')), [{ target, label: target }]);
+  assert(terminal.lines()[0].includes(target));
+  await sink.close();
+});
+
+await test('非HTTP地址、含凭据或控制字符的启动地址不生成终端链接', async () => {
+  const values = ['javascript:alert(1)', 'file:///tmp/console', 'not a URL', 'http://', 'http://user:password@localhost:17323',
+    'http://localhost:17323\n/other', 'http://localhost:17323/\u001b]8;;https://evil.example\u0007spoof\u001b]8;;\u0007',
+    'http://localhost:17323/\u009b2J', 'http:\\localhost:17323'];
+  for (const value of values) {
+    const terminal = new Terminal(), sink = output(terminal);
+    sink.start(value); await flush();
+    assert.equal(links(terminal.text()).length, 0, JSON.stringify(value));
+    assert(!terminal.text().includes('\u001b]8;'));
+    assert(!terminal.text().includes('https://evil.example'));
+    await sink.close();
+  }
+});
+
+await test('日志中的URL和恶意OSC不会生成链接，退出与刷新不会泄漏链接状态', async () => {
+  const terminal = new Terminal(), sink = output(terminal);
+  sink.start(url); await flush();
+  const before = terminal.chunks.length;
+  sink.write('普通地址 https://example.test');
+  sink.write('\u001b]8;;https://evil.example\u0007伪装链接\u001b]8;;\u0007');
+  await flush();
+  const logs = terminal.chunks.slice(before).join('');
+  assert.equal(links(logs).length, 0); assert(!logs.includes('evil.example'));
+  assert(logs.includes('https://example.test')); assert(logs.includes('伪装链接'));
+  await sink.close();
+  assert.equal((terminal.text().match(/\u001b\]8;;[^\u0007]+\u0007/g) ?? []).length,
+    (terminal.text().match(/\u001b\]8;;\u0007/g) ?? []).length);
+});
+
+await test('重定向、dumb和显式关闭置顶均不输出OSC或SGR', async () => {
+  for (const options of [{ isTTY: false, env: {} }, { isTTY: true, env: { TERM: 'dumb' } }, { isTTY: true, env: { CW_PIN_HEADER: '0' } }]) {
+    const terminal = new Terminal({ isTTY: options.isTTY });
+    const sink = createConsoleOutput({ stdout: terminal, platform: 'win32', release: '10.0.26100', env: options.env });
+    sink.write('控制台已启动 ' + url); sink.start(url); await sink.close();
+    assert(terminal.text().includes(url)); assert(!terminal.text().includes('\u001b'));
+  }
 });
 
 await test('极窄窗口安全退化，扩大后可恢复置顶', async () => {

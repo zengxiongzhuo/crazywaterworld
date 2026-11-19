@@ -5,7 +5,7 @@ const progressionViews = [
   { id: 'equipment', tab: 'heroes', path: '/api/equipment', render: renderEquipment },
   { id: 'crafting', tab: 'heroes', path: '/api/equipment/crafting', render: renderCrafting },
   { id: 'pirate-board', tab: 'activities', path: '/api/pirates/board', render: renderPirateBoard },
-  { id: 'guild', tab: 'guild', path: '/api/guild', render: renderGuild },
+  { id: 'guild', tab: 'guild', boxId: 'guild-aid-view', path: '/api/guild', render: renderGuild },
 ];
 const pendingProgression = new Set();
 const trialFailureOptions = new Map();
@@ -15,13 +15,12 @@ async function refreshProgression(only) {
   const account=current;
   const views=progressionViews.filter(v=>(!only||only===v.id)&&!$('tab-'+v.tab).classList.contains('hidden'));
   await Promise.all(views.map(async view=>{
-    const box=$(view.id+'-view'),version=(viewVersions.get(view.id)||0)+1;
+    const box=$(view.boxId||view.id+'-view'),version=(viewVersions.get(view.id)||0)+1;
     viewVersions.set(view.id,version);
     const valid=()=>version===viewVersions.get(view.id)&&account===current;
     const same=box.dataset.owner===account;
     if(!same||!account||snapshot.paused||disconnected.has(account)){
       clear(box);delete box.progressSnapshot;
-      if(view.id==='guild')clear($('guild-aid-view'));
     }
     box.dataset.owner=account||'';
     if(!account||snapshot.paused||disconnected.has(account)){
@@ -34,22 +33,10 @@ async function refreshProgression(only) {
       if(!valid())return;
       const signature=JSON.stringify(data);
       if(box.progressSnapshot===signature)return;
-      const keep=view.id==='trial'&&[...box.children].some(item=>item.trialControls?.account===account);
+      const keep=view.id==='guild'||view.id==='guild-tech'||(view.id==='trial'&&[...box.children].some(item=>item.trialControls?.account===account));
       if(keep)view.render(box,data,account);
       else{
         const next=el('div');view.render(next,data,account);
-        if(view.id==='guild-tech'&&same&&box.querySelector('details')&&next.querySelector('details')){
-          const oldGroups=[...box.querySelectorAll('details')],newGroups=[...next.querySelectorAll('details')];
-          if(oldGroups.length===newGroups.length&&oldGroups.every((g,i)=>g.firstChild.textContent===newGroups[i].firstChild.textContent)){
-            for(const [i,group] of newGroups.entries()){
-              const oldBody=oldGroups[i].querySelector('tbody'),rows=[...group.querySelectorAll('tbody tr')];
-              rows.forEach((r,j)=>{const old=oldBody.rows[j];if(!old)oldBody.append(r);else if(old.outerHTML!==r.outerHTML||old.dataset.techState!==r.dataset.techState){const focused=old.contains(document.activeElement);old.replaceWith(r);if(focused)r.querySelector('button:enabled')?.focus({preventScroll:true});}});
-              while(oldBody.rows.length>rows.length)oldBody.deleteRow(-1);
-            }
-            [...next.querySelectorAll(':scope > p')].forEach((p,i)=>{box.children[i].textContent=p.textContent;});
-            box.progressSnapshot=signature;return;
-          }
-        }
         const focused=box.contains(document.activeElement)?document.activeElement.getAttribute('aria-label'):null;
         box.replaceChildren(...next.childNodes);
         if(focused)[...box.querySelectorAll('[aria-label]')].find(e=>e.getAttribute('aria-label')===focused)?.focus({preventScroll:true});
@@ -85,6 +72,106 @@ function progressionAction(label, path, payload, account, reason, group) {
     }
   };
   return button;
+}
+
+function openGuildTechUpgrade(row, account, data) {
+  const dialog = $('guild-tech-upgrade-dialog');
+  if (dialog.open || !row.canUpgrade || current !== account) return;
+  const target = $('guild-tech-target'), highest = $('guild-tech-highest');
+  const submit = $('guild-tech-submit'), dismiss = $('guild-tech-dismiss'), feedback = $('guild-tech-feedback');
+  const balance = data.balances.find(item => item.id === row.itemId)?.value;
+  // Index cumulative costs by the number of upgrades from the displayed level.
+  const prices = [0];
+  let affordable = row.level;
+  for (let level = row.level; level < row.maxLevel; level++) {
+    const cost = row.cost + (level - row.level) * row.costGrowth;
+    const total = prices[prices.length - 1] + cost;
+    if (!Number.isSafeInteger(cost) || cost <= 0 || !Number.isSafeInteger(total)) break;
+    prices.push(total);
+    if (total <= balance) affordable = level + 1;
+  }
+  let running = false, stopRequested = false;
+  $('guild-tech-upgrade-title').textContent = '升级' + row.name;
+  $('guild-tech-levels').textContent = '当前 ' + fmt(row.level) + ' 级 · 阶段上限 ' + fmt(row.maxLevel) + ' 级';
+  $('guild-tech-balance-label').textContent = '当前余额';
+  $('guild-tech-balance').textContent = fmt(balance) + ' ' + row.itemName;
+  $('guild-tech-target-field').hidden = false;
+  target.min = String(row.level + 1);
+  target.max = String(row.maxLevel);
+  target.value = target.min;
+  target.disabled = false;
+  highest.disabled = affordable <= row.level;
+  highest.textContent = '最高可升至 ' + fmt(affordable) + ' 级';
+  dismiss.disabled = false;
+  dismiss.textContent = '取消';
+  submit.hidden = false;
+  submit.textContent = '开始升级';
+
+  function quote() {
+    const steps = target.valueAsNumber - row.level;
+    const total = prices[steps];
+    const valid = target.checkValidity() && total !== undefined && Number.isSafeInteger(balance);
+    $('guild-tech-estimate').textContent = valid ? fmt(total) + ' ' + row.itemName : '—';
+    submit.disabled = !valid || total > balance;
+    feedback.textContent = !valid ? '请输入 ' + target.min + ' 至 ' + target.max + ' 之间的整数等级。'
+      : total > balance ? '还差 ' + fmt(total - balance) + ' ' + row.itemName + '。'
+      : steps === 1 && row.nextEffect ? '升级后效果：' + row.nextEffect : '';
+  }
+  target.oninput = quote;
+  highest.onclick = () => { target.value = String(affordable); quote(); };
+  function stop() {
+    stopRequested = true;
+    dismiss.disabled = true;
+    feedback.textContent = '正在核对本级结果，随后停止升级。';
+  }
+  dismiss.onclick = () => { if (running) stop(); else dialog.close(); };
+  dialog.oncancel = event => { if (running) { event.preventDefault(); stop(); } };
+  dialog.onclose = () => {
+    if (current !== account || (document.activeElement !== document.body && !dialog.contains(document.activeElement))) return;
+    const tr = $('guild-tech-view').querySelector('tr[data-tech-id="' + row.id + '"]');
+    (tr?.querySelector('button') || tr?.closest('details')?.querySelector('summary') || $('guild-tech-refresh')).focus({preventScroll:true});
+  };
+  $('guild-tech-upgrade-form').onsubmit = async event => {
+    event.preventDefault();
+    if (running || submit.hidden || submit.disabled || !target.reportValidity()) return;
+    const goal = target.valueAsNumber;
+    let level = row.level, spent = 0;
+    running = true;
+    $('guild-tech-levels').textContent = '起始 ' + fmt(row.level) + ' 级 · 目标 ' + fmt(goal) + ' 级';
+    $('guild-tech-balance-label').textContent = '升级前余额';
+    $('guild-tech-target-field').hidden = true;
+    target.disabled = highest.disabled = submit.disabled = true;
+    submit.textContent = '升级中…';
+    dismiss.textContent = '停止升级';
+    dismiss.focus();
+    try {
+      while (level < goal && !stopRequested) {
+        if (current !== account || snapshot.paused || disconnected.has(account)) throw Error('账号状态已变化');
+        const offset = level - row.level;
+        const maxCost = prices[offset + 1] - prices[offset];
+        feedback.textContent = '正在升级至 ' + fmt(level + 1) + ' 级，目标 ' + fmt(goal) + ' 级。';
+        const result = await call('/api/guild/tech/upgrade', { method:'POST', body:JSON.stringify({
+          techId:row.id, expectedIdentity:data.identity, expectedLevel:level, maxCost, confirm:true,
+        }) });
+        if (!result?.ok || result.level !== level + 1) throw Error('本级结果待确认，请刷新科技核对');
+        level = result.level;
+        spent += result.cost;
+      }
+      feedback.textContent = (level === goal ? '已升至 ' : '已停止，当前 ') + fmt(level) + ' 级，共消耗 ' + fmt(spent) + ' ' + row.itemName + '。';
+    } catch (error) {
+      feedback.textContent = '已确认至 ' + fmt(level) + ' 级，升级中止。' + error.message;
+      if (current === account) reportError(error);
+    } finally {
+      running = false;
+      submit.hidden = true;
+      dismiss.disabled = false;
+      dismiss.textContent = '关闭';
+      if (current === account) await refreshProgression('guild-tech');
+    }
+  };
+  quote();
+  dialog.showModal();
+  target.select();
 }
 
 function choice(bar, title, options) {
@@ -241,7 +328,7 @@ function renderEquipment(box, data, account) {
   })));
 }
 
-const guildSelections = new Map(),guildPages=new Map();
+const guildRequestViews = new Map();
 const mutualDrafts = new Map(), mutualWidgets = new Map();
 let mutualPollSerial = 0;
 function mutualPresetValues(draft) {
@@ -267,22 +354,28 @@ function renderGuildMutual(box, state = {}, account) {
   if(!draft){draft={target:20,mode:'all',memberIds:[],askEnabled:false,askTarget:20,askItemId:'',checkEverySeconds:15,...(state.preset??state.options),data:null,loading:false,version:0,savedVersion:0,valid:true,saving:null,saveError:''};mutualDrafts.set(account,draft);}
   const root=el('section','guild-mutual-panel');root.setAttribute('aria-label','单次联盟互助');
   const heading=el('div','title-with-help');heading.append(el('h4','','单次联盟互助'),makeHelpTip('单次联盟互助','手动开启后逐条处理，不加入常驻挂机。预设按账号自动保存，保存不会开始互助；刷新页面或重启后保留。游戏的20次是发起求助上限；赠送目标统计本工具今日记录，不含游戏内手动赠送，未知结果会预占次数。无合适请求、缺料或等待回赠时，按所设间隔再查，不自动备料。达到赠送目标后不再送，必要时等最后一份回赠。跨日、断开或重启后不自动继续。'));
-  root.append(heading,el('p','dim','每次送1份，先收回赠。'));
+  heading.append(el('span','dim','每次送 1 份，先收回赠。'));
+  root.append(heading);
   const fields=el('div','guild-mutual-fields');
   function field(title,control){const label=el('label','guild-mutual-field');label.append(el('span','',title),control);fields.append(label);return label;}
   const mode=el('select','config-select');mode.setAttribute('aria-label','互助赠送对象');mode.add(new Option('全部盟友','all'));mode.add(new Option('仅指定盟友','selected'));mode.value=draft.mode;field('赠送对象',mode);
-  const target=el('input','config-input');target.type='number';target.min='0';target.max='20';target.step='1';target.required=true;target.value=draft.target;target.setAttribute('aria-label','本工具今日赠送目标');field('本工具今日赠送目标（0–20）',target);
-  const interval=el('input','config-input');interval.type='number';interval.min='1';interval.max='300';interval.step='1';interval.required=true;interval.value=draft.checkEverySeconds;interval.setAttribute('aria-label','互助等待检查间隔');field('等待检查间隔（1–300秒）',interval);
+  const target=el('input','config-input');target.type='number';target.min='0';target.max='20';target.step='1';target.required=true;target.value=draft.target;target.setAttribute('aria-label','本工具今日赠送目标');field('今日赠送目标（0–20）',target);
+  const interval=el('input','config-input');interval.type='number';interval.min='1';interval.max='300';interval.step='1';interval.required=true;interval.value=draft.checkEverySeconds;interval.setAttribute('aria-label','互助等待检查间隔');field('检查间隔（1–300 秒）',interval);
   const memberPanel=el('details','config-multi');memberPanel.hidden=draft.mode!=='selected';const summary=el('summary','','指定盟友');memberPanel.append(summary);
   const memberBody=el('div','config-multi-panel'),search=el('input','config-input');search.type='search';search.placeholder='搜索盟友名称或ID';search.setAttribute('aria-label','搜索互助盟友');const list=el('div','config-option-list');memberBody.append(search,list);memberPanel.append(memberBody);
-  const ask=el('input');ask.type='checkbox';ask.checked=draft.askEnabled;ask.setAttribute('aria-label','发起同材料求助');field('发起同材料求助并循环互赠',ask);
+  const ask=el('input');ask.type='checkbox';ask.checked=draft.askEnabled;ask.setAttribute('aria-label','发起同材料求助');
+  const askToggle=el('label','guild-mutual-toggle');askToggle.append(ask,el('span','','发起同材料求助并循环互赠'));
   const askFields=el('div','guild-mutual-ask');askFields.hidden=!draft.askEnabled;
   const material=el('select','config-select');material.setAttribute('aria-label','互赠求助材料');material.add(new Option('请选择材料，例如橡胶圈',''));
   const materialLabel=el('label','guild-mutual-field');materialLabel.append(el('span','','求助材料'),material);
   const askTarget=el('input','config-input');askTarget.type='number';askTarget.min='0';askTarget.max='20';askTarget.step='1';askTarget.required=true;askTarget.value=draft.askTarget;askTarget.setAttribute('aria-label','游戏今日发起求助目标');const askLabel=el('label','guild-mutual-field');askLabel.append(el('span','','游戏今日发起求助目标（含手动）'),askTarget);
-  const askStatus=el('p','dim');askFields.append(materialLabel,askLabel,askStatus,el('p','dim','求助全盟可见，赠送限所选对象。'));
+  const askStatus=el('p','dim');
+  const askNotes=el('div','guild-mutual-notes');askNotes.append(askStatus,el('p','dim','求助全盟可见，赠送限所选对象。'));
+  askFields.append(materialLabel,askLabel,askNotes);
   const refresh=smallButton('刷新盟友与材料'),message=el('p','bad'),status=el('p','dim'),saved=el('p','dim');status.setAttribute('role','status');saved.setAttribute('role','status');const start=smallButton('开始本次互助'),stop=smallButton('停止互助'),save=smallButton('保存预设');start.setAttribute('aria-label','开始本次联盟互助');stop.setAttribute('aria-label','停止本次联盟互助');
-  const actions=el('div','bar');actions.append(start,stop,refresh,save);root.append(fields,memberPanel,askFields,actions,message,saved,status);box.append(root);
+  const actions=el('div','bar');actions.append(start,stop,refresh,save);
+  const feedback=el('div','guild-mutual-notes');feedback.append(message,saved,status);
+  root.append(fields,memberPanel,askToggle,askFields,actions,feedback);box.append(root);
   let currentState=state;
   function paintSaved(){saved.textContent=draft.saving?'正在保存预设…':draft.saveError?'预设未保存：'+draft.saveError:draft.savedVersion<draft.version?'预设尚未保存，请补全有效数值':'预设已按账号保存；保存不会开始互助。';}
   function changed(){draft.version++;draft.valid=target.checkValidity()&&askTarget.checkValidity()&&interval.checkValidity();paintSaved();if(draft.valid)void saveGuildMutualDraft(account);}
@@ -344,55 +437,112 @@ async function refreshGuildMutualState(){
   try{const state=await call('/api/guild/mutual');if(account!==current||serial!==mutualPollSerial)return;const widget=mutualWidgets.get(account);if(widget?.root.isConnected&&widget.paint(state))await refreshProgression('guild');}catch{/*统一请求处理已记录错误。*/}
 }
 setInterval(refreshGuildMutualState,3000);
+
+function appendGuildAidTable(panel, entries, personal, view) {
+  const headers = personal ? ['所需材料', '数量', '状态', '协助者'] : ['求助成员', '所需材料', '需要数量'];
+  const label = personal ? '我的求助' : '成员求助';
+  const rowHeight = 38, visibleRows = 9, overscan = 3;
+  const viewport = el('div', 'guild-aid-scroll');
+  viewport.id = 'guild-aid-scroll';
+  viewport.tabIndex = 0;
+  viewport.setAttribute('role', 'region');
+  viewport.setAttribute('aria-label', label + '列表');
+  viewport.style.setProperty('--guild-aid-row-height', rowHeight + 'px');
+  viewport.style.maxHeight = 'min(50dvh, ' + (visibleRows + 1) * rowHeight + 'px)';
+  const grid = el('table', personal ? 'guild-aid-personal' : 'guild-aid-members');
+  grid.setAttribute('aria-label', label);
+  grid.setAttribute('aria-rowcount', String(entries.length + 1));
+  const head = grid.createTHead().insertRow();
+  head.setAttribute('aria-rowindex', '1');
+  for (const name of headers) {
+    const th = el('th', '', name);
+    th.scope = 'col';
+    head.append(th);
+  }
+  const body = grid.createTBody();
+  viewport.append(grid);
+  panel.append(viewport);
+
+  function spacer(count) {
+    const tr = el('tr', 'guild-aid-spacer');
+    tr.setAttribute('aria-hidden', 'true');
+    const td = tr.insertCell();
+    td.colSpan = headers.length;
+    td.style.height = count * rowHeight + 'px';
+    return tr;
+  }
+  let previousStart = -1;
+  function paint(offset) {
+    const start = Math.max(0, Math.floor(offset / rowHeight) - overscan);
+    if (start === previousStart) return;
+    previousStart = start;
+    const end = Math.min(entries.length, start + visibleRows + 2 * overscan + 1);
+    const rows = document.createDocumentFragment();
+    if (start) rows.append(spacer(start));
+    for (let i = start; i < end; i++) {
+      const r = entries[i];
+      const values = personal ? [r.material, fmt(r.quantity), r.status, r.helper || '—'] : [r.requester, r.material, fmt(r.quantity)];
+      const tr = el('tr');
+      tr.setAttribute('aria-rowindex', String(i + 2));
+      for (const value of values) {
+        const td = tr.insertCell();
+        td.textContent = value;
+        td.title = value;
+      }
+      rows.append(tr);
+    }
+    if (end < entries.length) rows.append(spacer(entries.length - end));
+    body.replaceChildren(rows);
+  }
+  const index = personal ? 1 : 0;
+  const remember = () => {
+    view.offsets[index] = viewport.scrollTop;
+    paint(viewport.scrollTop);
+  };
+  paint(0);
+  viewport.scrollTop = view.offsets[index];
+  remember();
+  viewport.addEventListener('scroll', remember, { passive: true });
+}
+
 function renderGuild(box, data, account) {
-  if (data.state !== 'member') { box.textContent = data.reason; $('guild-aid-view').textContent=data.reason;return; }
-  box.appendChild(el('strong', null, data.name + ' · ' + fmt(data.level) + ' 级 · ' + fmt(data.memberCount) + ' 人'));
-  const welfare=el('section','guild-welfare');box.append(welfare);
-  welfare.appendChild(el('p', null, data.welfareCount == null ? '福利领取记录待确认' : '待领福利礼包 ' + data.welfareCount + ' 份'));
-  if (data.welfareCount > 0) welfare.appendChild(progressionAction('领取联盟福利礼包', '/api/guild/welfare', {}, account));
-  box=$('guild-aid-view');
+  if (data.state !== 'member') { box.textContent = data.reason; return; }
   const oldWidget=mutualWidgets.get(account);
   if(!oldWidget?.root.isConnected){clear(box);renderGuildMutual(box,data.mutualAid,account);}
   else oldWidget.paint(data.mutualAid||{});
-  for(const e of box.querySelectorAll(':scope > .guild-tabs,:scope > [role=tabpanel]'))e.remove();
-  const tabs = el('div', 'log-filter guild-tabs'), panel = el('div');
+  const oldLists = box.querySelector('.guild-aid-lists');
+  const focusId = oldLists?.contains(document.activeElement) && document.activeElement.id;
+  oldLists?.remove();
+  const view = guildRequestViews.get(account) || { selected: 0, offsets: [0, 0] };
+  guildRequestViews.set(account, view);
+  const lists = el('div', 'guild-aid-lists'), toolbar = el('div', 'guild-aid-toolbar');
+  const tabs = el('div', 'config-subtabs guild-tabs'), panel = el('div', 'guild-aid-panel');
+  const total = el('span', 'guild-aid-total');
   tabs.setAttribute('role', 'tablist'); tabs.setAttribute('aria-label', '联盟求助');
   panel.id = 'guild-aid-panel'; panel.setAttribute('role', 'tabpanel');
   const buttons = [];
   const draw = selected => {
-    guildSelections.set(account, selected);
+    view.selected = selected;
     buttons.forEach((button, index) => {
       button.setAttribute('aria-selected', String(index === selected)); button.tabIndex = index === selected ? 0 : -1;
     });
     panel.setAttribute('aria-labelledby', buttons[selected].id);
     clear(panel);
-    const entries=(selected?data.myRequests:data.requests)||[],key=account+':'+selected;
-    const pages=Math.max(1,Math.ceil(entries.length/10));
-    const page=Math.min(guildPages.get(key)||1,pages);guildPages.set(key,page);
-    const visible=entries.slice((page-1)*10,page*10);
-    function pager(){
-      if(pages===1)return;
-      const bar=el('div','bar'),prev=smallButton('上一页'),next=smallButton('下一页');
-      prev.disabled=page<=1;next.disabled=page>=pages;
-      prev.onclick=()=>{guildPages.set(key,page-1);draw(selected)};
-      next.onclick=()=>{guildPages.set(key,page+1);draw(selected)};
-      bar.append(prev,el('span','dim',page+' / '+pages+' 页 · '+entries.length+' 条'),next);panel.append(bar);
+    const entries = (selected ? data.myRequests : data.requests) || [];
+    const error = selected ? data.myAidError : data.aidError;
+    total.textContent = error ? '' : '共 ' + entries.length + ' 条';
+    if (error) {
+      panel.append(el('p', 'guild-aid-message bad', selected ? '我的求助读取失败：' + error : '成员求助读取失败，请刷新重试'));
+      return;
     }
-    if (!selected) {
-      if (data.requests.length) panel.appendChild(table(['求助成员', '所需材料', '需要数量'], visible.map(r => [r.requester, r.material, fmt(r.quantity)])));
-      else panel.appendChild(el('p', 'dim', data.aidError ? '成员求助读取失败，请刷新重试' : '目前没有成员求助'));
-      pager();return;
-    }
-    if (data.myAidError) { panel.appendChild(el('p', 'bad', '我的求助读取失败：' + data.myAidError)); return; }
-    if (data.myAidPending) panel.appendChild(el('p', 'dim', '上次领取结果待确认，请稍后刷新'));
-    if (data.myAidCount > 0) panel.appendChild(progressionAction('领取待领物资（' + data.myAidCount + '）', '/api/guild/aid/claim', {}, account,
+    if (selected && data.myAidPending) panel.append(el('p', 'dim', '上次领取结果待确认，请稍后刷新'));
+    if (selected && data.myAidCount > 0) panel.appendChild(progressionAction('领取待领物资（' + data.myAidCount + '）', '/api/guild/aid/claim', {}, account,
       data.myAidPending ? '上次领取结果仍待确认' : ''));
-    if (data.myRequests?.length) panel.appendChild(table(['所需材料', '数量', '状态', '协助者'], visible.map(r => [r.material, fmt(r.quantity), r.status, r.helper || '—'])));
-    else panel.appendChild(el('p', 'dim', '目前没有自己的求助记录'));
-    pager();
+    if (entries.length) appendGuildAidTable(panel, entries, Boolean(selected), view);
+    else panel.append(el('p', 'guild-aid-message dim', selected ? '目前没有自己的求助记录' : '目前没有成员求助'));
   };
   ['成员求助', '我的求助'].forEach((label, index) => {
-    const button = smallButton(label); button.id = 'guild-aid-tab-' + index;
+    const button = el('button', '', label); button.type = 'button'; button.id = 'guild-aid-tab-' + index;
     button.setAttribute('role', 'tab'); button.setAttribute('aria-controls', panel.id);
     if (index && (data.myAidCount > 0 || data.myAidCount == null)) {
       const count = el('span', 'guild-tab-count', data.myAidCount == null ? '待确认' : String(data.myAidCount));
@@ -406,20 +556,103 @@ function renderGuild(box, data, account) {
     };
     buttons.push(button); tabs.appendChild(button);
   });
-  box.append(tabs, panel); draw(guildSelections.get(account) || 0);
+  toolbar.append(tabs, total);
+  lists.append(toolbar, panel);
+  box.append(lists);
+  draw(view.selected);
+  if (focusId) document.getElementById(focusId)?.focus({ preventScroll: true });
 }
 
-function renderGuildTech(box,data,account){
- if(data.state!=='member'){box.textContent=data.reason||'科技信息未同步';return;}
- box.append(el('p','',data.balances.map(b=>b.name+' '+(b.value==null?'未同步':fmt(b.value))).join(' · ')),el('p','dim','已研究 '+data.learned+'/'+data.total+' 项 · 累计 '+data.totalLevels+' 级 · '+(data.stage?'赛季阶段 '+data.stage:'赛季阶段已全部开放')));
- const groups=[...new Set(data.rows.map(r=>r.type))];
- for(const type of groups){const group=el('details','guild-tech-group');group.open=type==='世界';group.append(el('summary','',type+'科技'));
- const wrap=el('div','guild-tech-table');wrap.append(table(['科技 / 效果','等级','升级费用','操作'],data.rows.filter(r=>r.type===type).map(row=>{
-  const name=el('div','',row.name);name.append(el('span','dim',row.effect));const action=el('div'),button=smallButton('升级');button.disabled=!row.canUpgrade;button.setAttribute('aria-label','升级'+row.name);
-  if(row.reason)button.title=row.reason;
-  button.onclick=()=>{if(current!==account||button.disabled)return;const body=el('div');body.append(el('p','',row.name+'：'+row.level+' → '+(row.level+1)+'级'),el('p','',row.itemName+'消耗 '+fmt(row.cost)),el('p','',row.nextEffect||''));openConfirm('升级科技',[body],async()=>{if(current!==account||snapshot.paused||disconnected.has(account))throw Error('账号状态已变化，请刷新后再试');button.disabled=true;try{await call('/api/guild/tech/upgrade',{method:'POST',body:JSON.stringify({techId:row.id,expectedLevel:row.level,maxCost:row.cost,confirm:true})});}finally{if(current===account){button.disabled=!row.canUpgrade;await refreshProgression('guild-tech');}}});};
-  action.append(button);if(row.reason)action.append(el('span','dim',row.reason));return[name,row.level+'/'+(row.maxLevel??'?'),row.level>=row.totalMax?'—':fmt(row.cost)+' '+row.itemName,action];
- })));[...wrap.querySelectorAll('tbody tr')].forEach((r,i)=>{r.dataset.techState=JSON.stringify(data.rows.filter(row=>row.type===type)[i]);});group.append(wrap);box.append(group);}
+function createGuildTechGroup(type) {
+  const group = el('details', 'guild-tech-group');
+  group.dataset.type = type;
+  group.open = type === '世界';
+  const grid = el('table', 'guild-tech-table');
+  grid.setAttribute('aria-label', type + '科技');
+  const head = grid.createTHead().insertRow();
+  for (const text of ['科技 / 当前效果', '等级', '下级消耗', '升级']) {
+    const th = el('th', '', text);
+    th.scope = 'col';
+    head.append(th);
+  }
+  grid.createTBody();
+  group.append(el('summary', '', type + '科技'), grid);
+  return group;
+}
+
+function renderGuildTechRow(tr, row, account, data) {
+  const name = el('span', 'guild-tech-name', row.name);
+  const effect = row.effect.startsWith(row.name + ' ') ? row.effect.slice(row.name.length + 1) : row.effect;
+  const description = el('div', 'guild-tech-description');
+  description.append(name, el('span', 'guild-tech-effect', effect));
+  const info = tr.insertCell();
+  info.append(description);
+  tr.insertCell().textContent = row.level + ' / ' + (row.maxLevel ?? '?');
+
+  const cost = tr.insertCell();
+  if (row.totalMax != null && row.level >= row.totalMax) {
+    cost.className = 'guild-tech-no-cost';
+    cost.textContent = '—';
+  } else {
+    cost.textContent = row.cost > 0 ? fmt(row.cost) + ' ' + row.itemName : '待确认';
+  }
+  const action = tr.insertCell();
+  if (row.canUpgrade) {
+    const button = smallButton('升级');
+    button.setAttribute('aria-label', '升级' + row.name);
+    button.setAttribute('aria-haspopup', 'dialog');
+    button.onclick = () => {
+      if (current === account && !snapshot.paused && !disconnected.has(account)) openGuildTechUpgrade(row, account, data);
+    };
+    action.append(button);
+  } else {
+    action.append(el('span', 'guild-tech-reason', row.reason));
+  }
+}
+
+function renderGuildTech(box, data, account) {
+  if (data.state !== 'member') { box.textContent = data.reason || '科技信息未同步'; return; }
+  const overview = el('div', 'guild-tech-overview');
+  for (const balance of data.balances) {
+    const item = el('span', 'guild-tech-balance');
+    item.append(el('span', '', balance.name), el('strong', '', balance.value == null ? '未同步' : fmt(balance.value)));
+    overview.append(item);
+  }
+  const progress = el('div', 'guild-tech-progress');
+  for (const label of ['已研究 ' + data.learned + '/' + data.total + ' 项', '累计 ' + data.totalLevels + ' 级',
+    data.stage ? '赛季阶段 ' + data.stage : '赛季阶段已全部开放']) progress.append(el('span', '', label));
+  overview.append(progress);
+  const oldOverview = box.querySelector('.guild-tech-overview');
+  if (oldOverview) oldOverview.replaceWith(overview);
+  else box.replaceChildren(overview);
+
+  const previousGroups = new Map([...box.querySelectorAll('.guild-tech-group')].map(group => [group.dataset.type, group]));
+  const types = [...new Set(data.rows.map(row => row.type))];
+  for (const [groupIndex, type] of types.entries()) {
+    const group = previousGroups.get(type) || createGuildTechGroup(type);
+    const position = box.children[groupIndex + 1] ?? null;
+    if (position !== group) box.insertBefore(group, position);
+    const body = group.querySelector('tbody');
+    const rows = data.rows.filter(row => row.type === type);
+    rows.forEach((row, index) => {
+      const tr = el('tr');
+      renderGuildTechRow(tr, row, account, data);
+      tr.dataset.techId = String(row.id);
+      const old = body.rows[index];
+      if (!old) { body.append(tr); return; }
+      const focused = old.contains(document.activeElement);
+      const nextButton = tr.querySelector('button');
+      old.dataset.techId = tr.dataset.techId;
+      for (const [column, cell] of [...tr.cells].entries()) {
+        if (old.cells[column].outerHTML !== cell.outerHTML) old.cells[column].replaceWith(cell);
+      }
+      const button = old.querySelector('button');
+      if (button) button.onclick = nextButton.onclick;
+      if (focused && !old.contains(document.activeElement)) (button || group.querySelector('summary')).focus({preventScroll:true});
+    });
+    while (body.rows.length > rows.length) body.deleteRow(-1);
+  }
+  for (const [type, group] of previousGroups) if (!types.includes(type)) group.remove();
 }
 
 function craftingCosts(costs) {

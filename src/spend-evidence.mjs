@@ -74,7 +74,9 @@ export function factoryProductionOperation(water, buildingId, batch) {
     catch (error) { record(false, '读取工厂状态失败，保留待确认记录', null, error); throw error; }
     const after = factoryProductionSnapshot(next, buildingId);
     if (!after) return record(false, '目标工厂队列或待收成品不完整');
-    if (after.building.level !== before.building.level) return record(false, '工厂等级已变化，不能归属原排产', after);
+    const wasUpgrading = before.building.buildStartTime > 0 || before.building.buildFinishTime > 0;
+    const upgradeCompleted = wasUpgrading && after.building.level === before.building.level + 1;
+    if (after.building.level !== before.building.level && !upgradeCompleted) return record(false, '工厂等级已变化，不能归属原排产', after);
     const serverNow = (Date.now() + (client.serverClockOffsetMs || 0)) / 1000;
     if (after.building.factory.autoProductId && (next.autoProduceForever || next.autoProduceEndTime > serverNow)) return record(false, '原生自动生产已开启，不能归属新增成品', after);
     const confirmed = [...expected].every(([id, count]) => (after.totals.get(id) ?? 0) - (baseline.get(id) ?? 0) >= count);

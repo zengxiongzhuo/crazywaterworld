@@ -4,15 +4,15 @@
 
 ## 项目概述
 
-微信/抖音小游戏《疯狂水世界》的协议侧挂机工具：直连游戏 WebSocket 网关，并提供本地网页控制台。仅面向 Windows，Node.js ^20.19.0 或 >=22.12.0，ESM。文档、界面和日志均为中文。
+微信/抖音小游戏《疯狂水世界》的协议侧挂机工具：直连游戏 WebSocket 网关，并提供本地网页控制台。主要面向 Windows，提供 macOS 微信缓存路径识别、默认浏览器打开和读取权限提示等基础兼容；电脑微信和电脑抖音采集仍仅适用于 Windows。Node.js ^20.19.0 或 >=22.12.0，ESM。文档、界面和日志均为中文。
 
 ## 常用命令
 
 ```powershell
 npm start                     # prestart 先构建界面，再启动；端口 17321
-.\start-console.cmd           # 用户入口，端口 17323，不自动开浏览器，输出地址和实时业务日志
+.\start-console.cmd           # 检查环境、按需安装依赖、构建后启动；端口 17323，不自动开浏览器
 .\start-console.cmd url       # 只输出地址并保持窗口，不启动控制台
-.\start-console.cmd status    # 只检查 MITM 证书状态，不启动控制台
+.\start-console.cmd status    # 按需准备依赖后检查证书与采集恢复状态，不构建或启动控制台
 npm run build:ui              # 改 TSX 或 theme.css 后运行，提交 src/ui/dist 产物
 npm test                      # pretest 先构建，再执行规范、类型与全部分组，遇错即停
 npm run test:offline           # 构建、类型检查及无需本机协议的核心回归
@@ -32,7 +32,7 @@ npm run sync-resources        # 从游戏发布清单更新配置表和世界地
 npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 ```
 
-`CW_PORT` 可改端口，`CW_NO_BROWSER=1` 禁止自动开浏览器。测试用 `node:assert/strict`，新文件需加入对应 `package.json` 脚本，核心离线专项同时登记到 `tools/selftest-offline.mjs`。单跑某个测试分组不会触发顶层 `pretest`，涉及界面标记时先构建。`test:offline` 会将协议路径指向缺失文件，依赖真实协议的测试应明确使用自有协议包进行验证。
+`CW_HOST` 可改监听 IP/主机名（默认 `127.0.0.1`），`CW_PORT` 可改端口，`CW_NO_BROWSER=1` 禁止自动开浏览器。`console-address.mjs` 统一监听主机校验与本机访问 URL，通配监听使用回环 URL，IPv6 URL 带方括号。测试用 `node:assert/strict`，新文件需加入对应 `package.json` 脚本，核心离线专项同时登记到 `tools/selftest-offline.mjs`。单跑某个测试分组不会触发顶层 `pretest`，涉及界面标记时先构建。`test:offline` 会将协议路径指向缺失文件，依赖真实协议的测试应明确使用自有协议包进行验证。
 
 - `selftest-{fishing,fishing-upgrade,antique-recruit,activity-schedule,resident-orders,resident-http}.mjs` 由 `selftest-automation.mjs` 调用，单独执行不会跑测试。
 - `selftest-registry.mjs` 与 `selftest-describe.mjs` 不在 npm 测试脚本内；注册表测试会写测试键并自行清理。
@@ -49,9 +49,11 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 
 ### 协议与配置
 
+- `src/wechat/` 是仅用于微信扫码的 Node 原生协议模块（二维码、票据、MMTLS、小游戏 code），`wechat-login.mjs` 管理临时会话；禁止引入第三方授权可执行程序/额外服务。参考版本与数据边界见 `docs/wechat-native-login.md`。新增测试进入 `test:wechat-native` 和核心离线分组，真实扫码需用户参与，不能用真实账号自动回归。
+
 仓库不分发 `.proto` 或配置表，运行和部分测试需要本机游戏缓存。
 
-- `proto.mjs` 执行游戏自带 `game.js`，取得 protobufjs 编解码类。`protocol-source.mjs` 按 `CW_PROTO_BUNDLE`、微信缓存最高版本 `_src_chunks_.wxapkg`、`work/extracted/` 查找。
+- `proto.mjs` 执行游戏自带 `game.js`，取得 protobufjs 编解码类。`protocol-source.mjs` 为来源描述和实际读取共用同一解析入口：显式参数/`CW_PROTO_BUNDLE` → 最高版本微信缓存 → 程序根目录 `_src_chunks_.wxapkg` → `protocol/_src_chunks_.wxapkg` → `work/extracted/_src_chunks_/src/chunks/game.js`。相对位置基于程序目录；缓存权限失败可使用自备文件，最新主包缺分包或所选协议损坏不得静默回退旧协议。
 - 无反射信息，使用 `tools/describe.mjs` 还原字段、`tools/ctx.mjs` 查压缩代码上下文。`work/extracted/` 可能落后于微信缓存，客户端逻辑以缓存最高版本的主包为准。请求名和响应名必须核对真实 `protocol[name]`，不能凭名称推测接口。
 - `config.mjs` 按 `CW_CONFIG_PACK`、已验证的远程资源快照、较新的本地同步副本或微信缓存查找。`resource-updater.mjs` 在控制台和 CLI 持续挂机启动时及每 30 分钟检查发布清单（`CW_RESOURCE_UPDATE_MINUTES` 可调），验证配置和地图后原子启用；`config.resources` 保留任务的地图快照，挂机只在下一轮切换。`npm run sync-resources` 手动更新远程资源，`npm run sync-config` 备份本地配置来源；旧注释中的 `tools/fetch-config.mjs` 已不存在。测试应使用临时 `CW_RESOURCE_DIR`，控制台测试默认不启用远程更新。
 - `actions.mjs` 是协议操作目录，`mutate` 区分读写；`CW_DEBUG=1` 可同时在终端输出协议日志，原始日志默认写项目 `data/protocol.log`，主日志与 `.1` 按 `CW_PROTOCOL_LOG_MAX_BYTES`（默认 5 MB）轮转。
@@ -67,9 +69,9 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - 网页仅控制和订阅日志，关闭网页不停止后台 `loop.job`。业务日志经 `createConsole({ onLog })` 输出到 CLI；日志回调和 SSE 异常不能影响游戏任务，显式关闭控制台时再关闭 SSE。验证使用 `selftest-console-background.mjs` 的隔离账号与假客户端。
 - `activity-availability.mjs` 集中记录已确认结束活动的配置下线规则，依据见 `docs/activity-availability.md`。只过滤配置视图和有效调度，不删除 `automationTasks`、设置 schema 或历史值。服务器当前开放的对应子活动可覆盖旧下线记录；配置静态字段、动态补全、旧控制 API 和 loop 别名门控须一起检查，不能按“限时活动”整个分组停用。
 - 挂机使用外层运行 controller 和每连接独立 attemptController。普通网络、心跳连续超时和重传失败会中断旧轮次，待其退出后退避重连（3 秒起、最高 60 秒），保留进度、账本与预留。异地登录按账号的 `login.autoReconnect` 授权恢复，登录设置提供常规/深夜间隔、随机抖动及重试上限。未运行挂机的账号也按策略恢复连接并保持挂机停止状态。等待时间与已尝试次数持久保存以便重启接续，等待中保存配置立即重算下一次重试时间，页面读取遵守账号的重连等待。手动暂停、停止、断开或关闭自动重连取消重试，拒绝登录、协议错误及次数耗尽终止重试，手动暂停需明确恢复托管。重连后先自动同步工厂、农田和库存再接续原有任务，同步失败保留旧记录并暂缓写入。`GameClient.closeReason` 和登录错误 `recoverable` 决定分类。Webhook 仍未恢复。
-- CLI 的 `console-output.mjs` 在支持 VT 的 TTY 使用滚动区固定地址/提示，日志分批且有界，非 TTY 保留纯文本；关闭恢复滚动区。不要绕过此输出器打印普通控制台日志或全局替换 console；`CW_PIN_HEADER=0` 可关闭顶部固定。
+- CLI 的 `console-output.mjs` 在支持 VT 的 TTY 使用滚动区固定地址/提示，可信 HTTP(S) 启动地址以 OSC 8 超链接高亮，窄屏片段保持同一完整目标；日志分批且有界，非 TTY、dumb 或禁用固定区时保留纯文本；关闭恢复滚动区。不要绕过此输出器打印普通控制台日志或全局替换 console；`CW_PIN_HEADER=0` 可关闭顶部固定。
 - `reward-schedule.mjs` 记录奖励下次检查时间，相关推送提前唤醒。推送只触发串行检查，不能另开并行派遣绕过预算。
-- `accounts.mjs`、`capture.mjs`、`tools/mitm-*.mjs` 管理账号与采集。`src/platform/` 封装 Windows 代理、证书、客户端路径、浏览器和终端能力，`tools/start-console.mjs` 承担启动脚本逻辑。采集阶段与归属持久保存在 `data/capture-session.json`，恢复入口包括账号页按钮和 `start-console.cmd recover`。
+- `accounts.mjs`、`capture.mjs`、`tools/mitm-*.mjs` 管理账号与采集。`src/platform/` 封装 Windows 代理和证书，以及客户端路径、浏览器和终端能力；macOS 使用微信容器缓存路径和系统 `open` 命令，缓存权限错误提供授权指引。`tools/start-console.mjs` 承担启动脚本逻辑。采集阶段与归属持久保存在 `data/capture-session.json`，恢复入口包括账号页按钮和 `start-console.cmd recover`。
 
 ### 控制台页面
 
@@ -81,7 +83,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - 样式层顺序为 `properties, theme, base, components, page, utilities`。`console.css`、`settings.css` 在 `page` 层，只放布局和间距，不用 Tailwind 处理，所以不能写 `@apply`。模板克隆元素带工具类，变体颜色写在 `theme.css` 的 `@layer utilities`。新增运行时模板需在 `layout.tsx` 的 `templates()` 声明。修改 TSX 或 `theme.css` 后执行 `npm run build:ui`，将 `src/ui/dist/` 一起提交；`npm start`、`npm test` 也会先构建。
 - CSS Modules 仅用于迁移页面的局部布局，并放在 `page` 层，主题和通用控件继续使用 Tailwind v4。Biome 只检查 `biome.json` 中声明的迁移范围，新增页面应纳入其中。Day.js 只用于北京时间展示，不改后端计时和换日规则。完整接线、构建及验证约定见 `docs/frontend-architecture.md`。
 - 手机布局以 768px 为界：导航固定到底部，页头不吸顶。`table()` 生成的四列以上表格在 `main` 窄于 600px 时变为卡片，列名来自 `td[data-label]`。图标走 `art-thumbs.mjs` 的单图缩略图，页面不要再引用整张图集。
-- 顶层导航为总览、挂机成果、挂机配置、建筑一览、挑战、阵容、活动、杂项、账号。登录设置通过账号卡片弹窗编辑。挂机成果按当前区服或同账号全部区服展示本次及今日的完成操作、收获与消耗。阵容页集中管理自定义阵容和推荐阵容。各模块启停与参数在同一配置分组编辑，全局挂机启停和间隔保留在页头。总览提供运行状态和只读世界地图。手动玩法归建筑一览、挑战、活动或杂项。
+- 顶层导航为总览、挂机成果、挂机配置、建筑一览、挑战、阵容、活动、杂项、账号。登录设置通过账号卡片弹窗编辑。挂机成果按当前区服或同账号全部区服展示本次及今日的完成操作、收获与消耗。阵容页集中管理自定义阵容和推荐阵容。各模块启停与参数在同一配置分组编辑，全局挂机启停和间隔保留在页头。总览提供运行状态、世界地图与点城快捷操作。手动玩法归建筑一览、挑战、活动或杂项。
 - 挂机配置按账号草稿编辑。导入、保存、预览分别处理，保存不启动挂机；预览可连接读取真实状态但不写资源。网页开始或恢复挂机固定持续循环，不继承旧的有限轮数；显式 API 轮数参数和 CLI 行为保持兼容。
 - 新添加账号默认关闭挂机，未保存启停偏好的旧账号同样保持停止；更新已有账号凭据保留显式启停选择。用户通过页头或账号卡片手动开始后才保存自动恢复意向，暂停挂机清除该意向。卡片直接按目标账号请求，不切换当前账号。
 - 不使用 GitHub Actions，验证通过本地构建与离线测试执行。
@@ -93,7 +95,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 3. 在 `loop.mjs` 接入实际执行与 `report`，通过 `reward-schedule` 或模块调度控制复查；手动日常单项还涉及 `daily-single.mjs`。报告明确区分完成、已发送、跳过与失败。
 4. 新增路由在 `operation-labels.mjs` 补中文名称；测试放入 core、progression 或 extra，并更新用户文档。
 
-装备自动化由 `forge.enabled` 总控，`forge.collect/craft` 分别控制领取和续产，随主循环检查；旧配置缺省两项均为 true，保持原行为。`forge.nativeAuto` 默认 false，开启后同步所选工厂的游戏原生开关，本组工具领取、续产、分解及资源策略均暂停；关闭模式只撤销本工具此前开启的原生开关，回读确认后才接续。总控暂停和停止挂机不关闭游戏原生开关。`schedule.equipmentCollect/equipmentCraft` 仅兼容旧配置，归一化为关闭，不再暴露控制或执行旧策略。原有 `schedule.guildOrders/radarAuto/radarRepair/museumCollect/museumExplore/petCollect/petBreed` 独立保存，不强行映射成需要舰队、配方等参数的新模块。对应详细模块有效开启时接管相同功能，避免双跑；停用详细模块后可恢复旧规则。周订单手动、自动和活动入口统一调用 `activities.mjs` 的 `runWeekOrder`，共用持久防重键和材料预留。
+装备自动化由 `forge.enabled` 总控，`forge.collect/craft` 分别控制领取和续产，随主循环检查；旧配置缺省两项均为 true，保持原行为。`forge.nativeAuto` 默认 false，开启后同步所选工厂的游戏原生开关，本组工具领取、续产、分解及资源策略均暂停；关闭模式只撤销本工具此前开启的原生开关，回读确认后才接续。总控暂停和停止挂机不关闭游戏原生开关。`schedule.equipmentCollect/equipmentCraft` 仅兼容旧配置，归一化为关闭，不再暴露控制或执行旧策略。旧 `schedule.guildOrders/radarAuto/radarRepair/museumCollect/museumExplore/petCollect/petBreed` 已列入退休任务，加载和导入时强制关闭，停用详细模块后不恢复旧任务。联盟募兵由 `alliance.enabled && alliance.recruit` 控制，继续复用 `guild-orders.mjs` 的协议、额度与材料预留逻辑。周订单手动、自动和活动入口统一调用 `activities.mjs` 的 `runWeekOrder`，共用持久防重键和材料预留。
 
 门控有各自范围：`loop.world` 管基地，`loop.dailies` 管招募、点金、竞技场等日常动作，英雄自动养成需要 `loop.heroes && heroes.enabled`。免费领奖有独立开关。新增资源消费应由用户主动开启，海商王走商 `merchantTrade`、风采投票 `beautyVotes` 和罗盘用券 `compassSpin` 默认 false；不要笼统把所有“活动”都当成免费领奖。
 
@@ -116,7 +118,7 @@ npm run sync-art              # 同步素材；缓存缺图可加 -- --fetch
 - `world-boss.mjs` 只在服务器当天参与次数为 0 时派一支空闲舰队；城战接续、万吨巨轮、首杀各自检查目标、耐久、汽油和持久防重记录。城战原生委任额度来自服务器 VIP 规则，不能写死次数；`cityWar.nativeCommissionLimit` 默认 -1 按 VIP 等待，0 关闭所选舰队的原生委任后接管，N 表示先用 N 次再关闭，关闭结果需回读 `MyFleetsResponse` 确认。
 - `equipment-forge.mjs` 管详细锻造，`equipment-crafting.mjs` 保留原手动制造；达到下单上限不应阻止完工领取。海兽放生与装备分解不能读取客户端本地锁定，页面帮助必须说明限制。`antique-upgrade.mjs` 管藏品激活、升星、大师等级和套装升级；激活只消耗对应碎片，升星可用万能碎片，套装与大师消耗金币/经验；结果未知时按持久键阻止重复发送。
 - `seasonal-activities.mjs` 与奖励模块处理新活动；消费动作与免费奖励分别门控。`side-rewards.mjs` 处理漫剧、擂台赛每日礼包和赛季宝箱；擂台赛状态只有推送，由 `server.mjs` 记在连接上。`gift-codes.mjs` 按账号保存记录，多账号各自排队、发送跨账号串行；未知或连接失败只停该账号，限频停止同批未发送账号，未知码不重发。
-- 世界地图为只读展示。地图移动位置为已同步行军数据的推算，自动刷新间隔与挂机独立，不能承诺实时坐标。
+- 世界地图自动刷新只读，移动位置按已同步行军数据推算。城池详情的手动派遣和宣战绑定账号、场景和预览，通过账号写队列复核后执行。
 
 ## 数据与验证约定
 

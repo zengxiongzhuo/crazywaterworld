@@ -2,6 +2,7 @@ import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
 import { isFleetReserved, registerFleetReservations } from './fleet-reservations.mjs';
 
 const migrationOwner = 'dispatch-ledger';
+export const fleetStateName = fleet => ({ 1: fleet.curGridIdx > 0 ? '驻守在外' : '空闲', 2: '行军中', 3: '战斗中', 4: '维修中', 5: '排队中' })[fleet.state] || '未知';
 // 两代调度器共享舰队占用证据；桥接谓词忽略自身，避免递归检查。
 export function bridgeFleetReservations(client, getSettings, ledger, worldId) {
  const contains = id => Boolean(fleetRecordReason(ledger?.keyRecords() ?? {}, id, worldId) ||

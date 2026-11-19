@@ -5,6 +5,9 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { DATA_DIR } from './accounts.mjs';
 import { hasReward } from './activity-actions.mjs';
 import { rewardData } from './missing-rewards.mjs';
+import { publicGiftCodes, hasGiftCodeHistory } from './gift-code-library.mjs';
+import { canRetryGiftCode } from './gift-code-records.mjs';
+import { atomicJson } from './json-store.mjs';
 
 const messages = {
   GIFT_CODE_EXPIRED:'礼包码已过期', GIFT_CODE_INVALID:'礼包码无效',
@@ -22,17 +25,14 @@ function throughSendGate(work) {
   return run;
 }
 function parseCodes(input) {
-  if(typeof input!=='string'||input.length>12000)throw Error('请输入不超过100个礼包码');
+  if(typeof input!=='string'||Buffer.byteLength(input,'utf8')>1024*1024)throw Error('礼包码输入不能超过 1 MB');
   const codes=[...new Set(input.trim().split(/[\s,，;；]+/u).filter(Boolean))];
-  if(!codes.length||codes.length>100||codes.some(c=>c.length>128))throw Error('每批1至100个不同的礼包码，每个最多128个字符');
+  if(!codes.length||codes.some(c=>c.length>128))throw Error('每批至少一个不同的礼包码，每个最多128个字符');
   return codes;
 }
 const fileFor = id => path.join(DATA_DIR, 'gift-codes-' + encodeURIComponent(id) + '.json');
 function store(id, rows) {
-  fs.mkdirSync(DATA_DIR, {recursive:true});
-  const file = fileFor(id), tmp = file + '.' + randomUUID() + '.tmp';
-  try { fs.writeFileSync(tmp, JSON.stringify(rows)); fs.renameSync(tmp,file); }
-  finally { fs.rmSync(tmp,{force:true}); }
+  atomicJson(fileFor(id), rows);
 }
 function read(id) {
   let rows;
@@ -57,25 +57,34 @@ export function giftCodeSummary(id) {
   for(const r of latest)counts[r.status]=(counts[r.status]??0)+1;
   return {running,total:latest.length,counts};
 }
-export function startGiftCodes(id,input,dispatch,shared={stop:''}) {
+export function startGiftCodes(id,input,dispatch,shared={stop:''},options={}) {
   if(active.has(id))throw Error('该账号已有一批正在兑换');
   const codes=parseCodes(input);
   const history=read(id),batch=randomUUID(),time=new Date().toISOString();
+  publicGiftCodes.reconcile(history);
+  if(options.retry===true && (codes.length!==1 || !canRetryGiftCode(history,codes[0])))throw Error('该记录不允许重试，请刷新记录');
+  const expiry=new Map(publicGiftCodes.entries().map(row=>[row.code,row.expiresAt]));
   const rows=codes.map(code=>{
-    const old=history.find(r=>r.code===code&&['success','unknown','used'].includes(r.status));
-    return {batch, code, at:time,status:old?'skipped':'queued',detail:old?(old.status==='unknown'?'上次结果待确认，未重发':'已有兑换记录，未重发'):'等待兑换'};
+    const old=options.retry===true?null:history.find(r=>r.code===code&&hasGiftCodeHistory(r));
+    const expired=publicGiftCodes.isExpired(code);
+    return {batch, code, expiresAt:expiry.get(code)??null, automatic:options.automatic===true, at:time,status:old||expired?'skipped':'queued',
+      detail:old?(old.status==='unknown'?'上次结果待确认，未重发':'已有兑换记录，未重发'):expired?'礼包码已过期，尚未发送':'等待兑换'};
   });
   const job={rows:[...rows,...history]};store(id,job.rows);active.set(id,job);
   async function run(){
     let stop='';
     for(const r of rows){
       if(r.status!=='queued')continue;
+      if(options.shouldContinue?.()===false)stop='自动兑换已关闭或服务正在停止，尚未发送';
       stop||=shared.stop;
       if(stop){Object.assign(r,{status:'skipped',detail:stop});continue;}
+      if(publicGiftCodes.isExpired(r.code)){Object.assign(r,{status:'skipped',detail:'礼包码已过期，尚未发送'});continue;}
       try {
         await dispatch((client,enabled)=>throughSendGate(async()=>{
           stop||=shared.stop;
+          if(options.shouldContinue?.()===false)stop='自动兑换已关闭或服务正在停止，尚未发送';
           if(stop){Object.assign(r,{status:'skipped',detail:stop});return;}
+          if(publicGiftCodes.isExpired(r.code)){Object.assign(r,{status:'skipped',detail:'礼包码已过期，尚未发送'});return;}
           if(enabled?.()===false)throw Error('账号连接已变化');
           Object.assign(r,{at:new Date().toISOString(),status:'sending',detail:'等待服务器回包'});
           store(id,job.rows);
@@ -90,13 +99,14 @@ export function startGiftCodes(id,input,dispatch,shared={stop:''}) {
           }catch(error){
             const name=client.promptNames?.[error.prompt?.prompt];
             if(error.prompt && error.request==='GotGiftCodeRequest'){
-              Object.assign(r,{status:name==='GIFT_CODE_USED'?'used':'rejected',detail:messages[name]||('服务器拒绝，提示码 '+error.prompt.prompt)});
+              Object.assign(r,{status:name==='GIFT_CODE_USED'?'used':'rejected',promptName:name,detail:messages[name]||('服务器拒绝，提示码 '+error.prompt.prompt)});
+              if(name==='GIFT_CODE_EXPIRED')publicGiftCodes.expire(r.code);
               if(name==='GIFT_CODE_TOO_MANY_REQUESTS'){stop='服务器限频，尚未发送';shared.stop='同批其他账号触发服务器限频，尚未发送';}
             }else{
               Object.assign(r,{status:'unknown',detail:'未取得可核对的奖励回包，请核对游戏内记录'});stop='前一码结果待确认，尚未发送';
             }
           }
-        }));
+        }), { shouldStart: () => !shared.stop && options.shouldContinue?.() !== false && !publicGiftCodes.isExpired(r.code) });
       }catch(error){
         if(r.status==='queued')Object.assign(r,{status:'skipped',detail:'账号连接不可用（'+error.message+'），尚未发送'});
         stop='批次中断，尚未发送';
@@ -110,12 +120,14 @@ export function startGiftCodes(id,input,dispatch,shared={stop:''}) {
 }
 // 账号连接失败或结果未知只停该账号；限频才让同批尚未发送的账号一起停手。
 export function startGiftCodeBatch(targets,input) {
-  parseCodes(input);
+  if(input!==null)parseCodes(input);
   const shared={stop:''};
-  return targets.map(({id,dispatch,blocked})=>{
+  return targets.map(({id,dispatch,blocked,codes:personalCodes})=>{
     try {
       if(blocked)throw Error(blocked);
-      return {id,accepted:true,done:startGiftCodes(id,input,dispatch,shared).done};
+      const codes=personalCodes??input;
+      if(typeof codes!=='string'||!codes.trim())throw Error('该账号暂无未兑换的礼包码');
+      return {id,accepted:true,done:startGiftCodes(id,codes,dispatch,shared).done};
     }catch(error){ return {id,accepted:false,error:error.message}; }
   });
 }

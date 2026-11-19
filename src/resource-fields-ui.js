@@ -78,7 +78,7 @@ function paintResourceFieldsOverview(data) {
   for (const entry of data.pending || []) {
     pending.append(el('p', entry.confirmed ? 'dim' : 'warn', (entry.fleetId || '舰队') + ' → 格 ' + entry.grid + ' · ' + (entry.reason || (entry.confirmed ? '已派遣，等待战斗结果' : '操作结果待确认')) + '，已预留名额'));
   }
-  $('resource-fields-automatic').textContent = data.automatic ? '自动补位已开启' : '自动补位未开启';
+  $('resource-fields-automatic').textContent = data.automatic ? '自动占领已开启' : '自动占领未开启';
   $('resource-fields-notes').textContent = (data.notes || []).join(' ');
   updateResourceFieldsControls();
 }
@@ -174,7 +174,7 @@ function paintResourceFieldCandidates() {
   const root = clear($('resource-fields-candidates')), resource = $('resource-fields-resource').value;
   const minimum = Number($('resource-fields-level').value) || 1, replace = action.replaceGridIdx !== null;
   const rows = (data.candidates || []).filter(field => !resourceFieldCandidateReason(field) && (!resource || field.resourceId === resource) && field.level >= minimum);
-  if (resource) rows.sort((a, b) => (b.perHour ?? -1) - (a.perHour ?? -1) || a.grid - b.grid);
+  if (resource) rows.sort((a, b) => b.level - a.level || (b.perHour ?? -1) - (a.perHour ?? -1) || a.grid - b.grid);
   const pages = Math.max(1, Math.ceil(rows.length / 6)); action.page = Math.min(action.page || 0, pages - 1);
   for (const field of rows.slice(action.page * 6, (action.page + 1) * 6)) root.append(resourceFieldTableRow(field, false));
   const availability = resourceFieldCandidateReason(null);
@@ -274,7 +274,7 @@ async function openResourceFieldGiveUp(gridIdx) {
     root.append(resourceFieldRow(field), el('p', 'resource-fields-cost', rate === null ? '该田当前产量未同步，放弃后会失去其产出。' : '放弃后减少 ' + resourceFieldName(field.resourceId || '对应资源') + ' ' + resourceFieldsNumber(rate) + '/小时（当前有效基础产量）'),
       el('p', 'dim', '不需要舰队，不消耗汽油。放弃后释放这块田的占领名额。'),
       el('p', 'warn resource-fields-replacement-warning', '确认后停止持有这块资源田；需要重新出征才能再次占领。'));
-    if (quote.automatic) root.append(el('p', 'warn', '自动补位仍开启，后续可能再次占领资源田。可到资源田配置中关闭自动占领。'));
+    if (quote.automatic) root.append(el('p', 'warn', '自动占领仍开启，后续可能再次占领资源田。可到资源田配置中关闭自动占领。'));
     if (quote.reason) root.append(el('p', 'warn', quote.reason));
     const expiry = el('p', 'warn'); expiry.id = 'resource-fields-action-expiry'; expiry.hidden = true; root.append(expiry);
     $('resource-fields-action-confirm').textContent = '确认放弃';

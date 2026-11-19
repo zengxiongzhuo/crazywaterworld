@@ -250,7 +250,7 @@ try {
       assert.equal(await page.locator('[data-resource-give-up="102"]').isDisabled(), false, '放弃不需要可用舰队');
       await page.locator('[data-resource-give-up="102"]').click(); await waitReady(page);
       assert.deepEqual(requests.filter(row => row.url.includes('/preview')).at(-1).body, { kind: 'giveUp', gridIdx: 102 });
-      assert.match(await dialog.textContent(), /放弃后减少 种子 0\/小时/); assert.match(await dialog.textContent(), /自动补位仍开启/);
+      assert.match(await dialog.textContent(), /放弃后减少 种子 0\/小时/); assert.match(await dialog.textContent(), /自动占领仍开启/);
       await page.evaluate(() => { resourceFieldsAction.quote.expiresAt = Date.now() - 1; });
       await page.waitForFunction(() => document.querySelector('#resource-fields-action-confirm').disabled);
       await page.locator('#resource-fields-action-back').click(); await page.locator('[data-resource-give-up="102"]').click(); await waitReady(page);
@@ -276,6 +276,6 @@ try {
     }
     await page.close(); console.log('通过：' + name + ' 紧凑汇总、已占及候选表、分页、占领/替换/逐块放弃');
   }
-  assert.deepEqual(errors, []); console.log('通过：仅显示可占领候选、过滤后计数与分页、汽油和待确认消耗、满额替换恢复/取消、收益比较、跨资源替换、逐行绑定、无舰队放弃、自动补位提醒、未知产量、部分失败、未知放弃、重复确认、过期、账号隔离与停刷；未连接游戏');
+  assert.deepEqual(errors, []); console.log('通过：仅显示可占领候选、过滤后计数与分页、汽油和待确认消耗、满额替换恢复/取消、收益比较、跨资源替换、逐行绑定、无舰队放弃、自动占领提醒、未知产量、部分失败、未知放弃、重复确认、过期、账号隔离与停刷；未连接游戏');
   console.log('截图：' + output);
 } finally { await browser?.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); }

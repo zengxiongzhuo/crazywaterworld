@@ -186,9 +186,42 @@ try {
     assert.deepEqual((await fallbackPreview(f, { keys })).actions.map(a => a.targetUid), [81, 90]);
   });
 
-  await check('显式兜底使用独立奖励规则并在跟随无目标时接续', async () => {
+  for (const [quality, field, mode] of [
+    ['ORANGE', 'rewardItems', 'auto'],
+    ['PURPLE', 'fallbackMediumRewardPriority', 'fallback'],
+    ['BLUE', 'fallbackSmallRewardPriority', 'fallback'],
+  ]) {
+    await check(quality + ' 货轮多选奖励命中任一项即可派遣，发送前按最新奖励复核', async () => {
+      const f = fallbackFixture(), target = f.state.targets[0];
+      target.color = f.protocol.Color[quality];
+      f.state.targets = [target];
+      f.settings.treasure.fleetIds = ['1远征船'];
+      f.settings.treasure[field] = ['徽章经验', '精铁'];
+      const reward = target.reward.asset[0];
+
+      reward.id = 'GOLD';
+      const unmatched = await fallbackPreview(f);
+      assert.equal(unmatched.actions.length, 0);
+      assert.match(unmatched.targets[0].reason, mode === 'fallback' ? /未命中任一兜底目标奖励/ : /未命中任一普通目标奖励/);
+      reward.id = '精铁';
+      assert.deepEqual((await fallbackPreview(f)).actions.map(a => [a.targetUid, a.mode]), [[target.uid, mode]]);
+      f.client.onRequest = name => { if (name === 'WorldInfoRequest') reward.id = 'GOLD'; };
+      const skipped = await run(f, f.settings);
+      assert.equal(skipped.results[0]?.skipped, true);
+      assert.deepEqual(f.client.writes, []);
+
+      reward.id = '徽章经验';
+      f.client.onRequest = name => { if (name === 'WorldInfoRequest') reward.id = '精铁'; };
+      const dispatched = await run(f, f.settings);
+      assert.equal(dispatched.results[0]?.status, 'confirmed');
+      assert.equal(dispatched.results[0].step.mode, mode);
+      assert.deepEqual(f.client.writes.map(row => row.body.uid), [target.uid]);
+    });
+  }
+
+  await check('普通类型留空且跟随无目标时仍按独立兜底类型和奖励派遣', async () => {
     const f = fallbackFixture();
-    Object.assign(f.settings.treasure, { follow: true, autoJoin: false, followNames: ['未出现的盟友'], rewardItems: ['橙装材料自选包'], fallbackMediumRewardPriority: ['精铁'] });
+    Object.assign(f.settings.treasure, { follow: true, autoJoin: false, followNames: ['未出现的盟友'], qualities: [], rewardItems: ['橙装材料自选包'], fallbackMediumRewardPriority: ['精铁'] });
     const result = await run(f, f.settings);
     assert.deepEqual(f.client.writes.map(a => a.body.uid), [81, 83]);
     assert(result.results.every(r => r.step.mode === 'fallback' && r.status === 'confirmed'));
@@ -196,9 +229,9 @@ try {
     assert.match(result.results[1].step.label, /小型货轮/);
   });
 
-  await check('关闭只抢万吨后保留普通中小船规则，兜底时间和名额只约束兜底', async () => {
+  await check('普通参与勾选中小货轮时，兜底时间和名额只约束兜底', async () => {
     const f = fallbackFixture(), p = f.settings.treasure;
-    Object.assign(p, { onlyTenThousand: false, participationMode: 'always', fallbackTargetRewards: 1 });
+    Object.assign(p, { qualities: ['PURPLE', 'BLUE'], participationMode: 'always', fallbackTargetRewards: 1 });
     f.state.stats.todayRewardTimes = 3;
     let plan = await fallbackPreview(f);
     assert.equal(plan.actions.length, 2);
@@ -430,7 +463,7 @@ try {
     const f = treasureFixture(), s = treasureSettings(); f.state.targets = [];
     f.state.fleets.forEach(fleet => { fleet.autoFight = { isOn: true }; });
     const plan = await preview(f, s);
-    assert.equal(plan.actions.length, 0); assert.deepEqual(plan.notes, ['当前没有可读取的万吨货轮，保持等待，不抢小型或中型货轮']);
+    assert.equal(plan.actions.length, 0); assert.deepEqual(plan.notes, ['当前没有所选类型的货轮，保持等待']);
     assert(plan.fleets.every(fleet => fleet.state === '空闲' && !fleet.reason));
   });
 

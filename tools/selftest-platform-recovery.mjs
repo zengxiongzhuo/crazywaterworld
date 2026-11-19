@@ -153,7 +153,7 @@ if (process.argv[2] === '--douyin-child') {
 
     const env = {}, printed = [];
     let launched = 0, held = 0, checked = 0;
-    const launcher = { env, print: value => printed.push(value), hold: async () => { held++; }, launch: async () => { launched++; },
+    const launcher = { env, print: value => printed.push(value), prepare: async () => {}, hold: async () => { held++; }, launch: async () => { launched++; },
       certificateCommand: async args => { assert.deepEqual(args, ['status']); checked++; }, inspectCaptureRecovery: () => ({ pending: false }) };
     await startConsole(['url'], launcher);
     assert.equal(printed[0], 'http://127.0.0.1:17323/');

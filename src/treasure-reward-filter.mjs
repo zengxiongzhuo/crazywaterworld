@@ -15,10 +15,19 @@ function supplyRewardIds(config, rewardIds = configuredRewardIds(config)) {
   return new Set(items.filter(row => row.type === '补给材料' && row.id !== supplyDisplayId && rewardIds.has(row.id)).map(row => row.id));
 }
 
+// 返回第一个命中的勾选项。空选时所有货轮同级，勾选后没有交集才跳过。
+export function treasureRewardPriority(config, selected, rewards) {
+  if (!selected?.length) return 0;
+  const ids = new Set((rewards ?? []).map(asset => asset.id));
+  return selected.findIndex(id => {
+    if (id !== supplyDisplayId) return ids.has(id);
+    const supplies = supplyRewardIds(config);
+    return (rewards ?? []).some(asset => supplies.has(asset.id));
+  });
+}
+
 export function matchesTreasureRewards(config, selected, rewards) {
-  if (!selected?.length) return true;
-  const ids = new Set(selected), supplies = ids.has(supplyDisplayId) ? supplyRewardIds(config) : new Set();
-  return (rewards ?? []).some(asset => asset.id !== supplyDisplayId && (ids.has(asset.id) || supplies.has(asset.id)));
+  return treasureRewardPriority(config, selected, rewards) >= 0;
 }
 
 // 仅货轮使用此目录：先列实际奖励，完整材料和旧选择仍可搜索；其他模块不改名称或顺序。

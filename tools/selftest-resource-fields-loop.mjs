@@ -53,6 +53,27 @@ try {
     f.reportHook = () => { if (f.client.writes.length) f.stop.aborted = true; };
     await f.run(); assert.deepEqual(f.sleeps, [120000]); assert.equal(f.client.writes.length, 1); f.clean();
   });
+  await test('先占可用的低级种子田，下轮发现高级种子田后在满额下换田', async () => {
+    const f = fixture(2);
+    f.state.maxNum = 1;
+    f.occupyImmediately = true;
+    Object.assign(f.settings().resourceFields, { allocationMode: 'quota', quotas: { fuel: 0, seeds: 1, tech: 0 } });
+    const highCity = f.state.cities.find(city => city.id === 1);
+    highCity.guildIdx = 8;
+    f.sleepHook = ms => {
+      assert.deepEqual(f.state.fields.map(field => field.gridIdx), [21]);
+      highCity.guildIdx = 7;
+      wall += ms;
+    };
+    f.reportHook = () => { if (f.state.fields.some(field => field.gridIdx === 11)) f.stop.aborted = true; };
+    await f.run();
+    assert.deepEqual(f.sleeps, [120000]);
+    assert.deepEqual(f.client.writes.map(({ name, body }) => [name, body.resFieldGridIdx]), [
+      ['ChallengeResFieldRequest', 21], ['GiveUpResFieldRequest', 21], ['ChallengeResFieldRequest', 11],
+    ]);
+    assert.deepEqual(f.state.fields.map(field => field.gridIdx), [11]);
+    f.clean();
+  });
   await test('保存配置唤醒关闭模块，事件本身不执行协议', async () => {
     const f = fixture(2); f.settings().resourceFields.enabled = false;
     f.sleepHook = () => { wall += 1000; const next = structuredClone(f.settings()); next.resourceFields.enabled = true; f.replace(next);

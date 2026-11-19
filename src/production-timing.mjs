@@ -42,14 +42,54 @@ function estimatedTime(base, reduction, speed, reasons) {
       ...(duration === 0 ? ['瞬时生产按至少 1 秒的调度粒度估算'] : [])] };
 }
 
+// A predicted job can use the temporary lane if it fits inside the confirmed
+// entitlement window. Already-running jobs retain the server's finish time.
+export function nextFactoryLane(finishes, expiresAt, seconds) {
+  let index = 0;
+  for (let i = 1; i < finishes.length; i++) {
+    if (expiresAt !== null && finishes[i] + seconds > expiresAt) continue;
+    if (finishes[i] < finishes[index]) index = i;
+  }
+  return { index, start: finishes[index], finish: finishes[index] + seconds };
+}
+
+export function commitFactoryLane(finishes, lane) {
+  // A later entry in the same queue cannot start before its predecessor,
+  // even when the shorter entry could fit in the remaining card window.
+  for (let i = 0; i < finishes.length; i++) finishes[i] = Math.max(finishes[i], lane.start);
+  finishes[lane.index] = lane.finish;
+}
+
+export function secondProductionLane(config, monthCards, now) {
+  const cards = Array.isArray(monthCards) ? monthCards : monthCards?.cardItem;
+  const types = new Set();
+  let known = true, until = 0;
+  if (!Array.isArray(cards) || !finiteAmount(now)) return { known: false, until };
+  for (const card of cards) {
+    if (![1, 2].includes(card?.type) || types.has(card.type) || !Number.isSafeInteger(card.endTime) || card.endTime < -1) {
+      return { known: false, until: 0 };
+    }
+    types.add(card.type);
+    if (card.endTime !== -1 && card.endTime <= now) continue;
+    const id = card.type === 1 ? '普通月卡' : '高级月卡';
+    const effects = table(config, 'MonthCardCfg').find(row => row.id === id)?.effectList;
+    if (!Array.isArray(effects)) { known = false; continue; }
+    if (effects.some(pair => pair?.[0] === '第二生产位' && positiveInteger(pair[1]))) {
+      until = Math.max(until, card.endTime === -1 ? Infinity : card.endTime);
+    }
+  }
+  return { known, until };
+}
+
 export function createProductionTiming({
   config, effects, monthCards, serverNow, observedDurations = [],
 } = {}) {
   const values = readEffects(effects);
   const observations = Array.isArray(observedDurations) ? observedDurations : [];
-  const cards = Array.isArray(monthCards) ? monthCards : monthCards?.cardItem;
+  const secondLane = secondProductionLane(config, monthCards, serverNow);
+  const recipes = new Map(table(config, 'BuildingProduceCfg').map(row => [row.itemId, row]));
 
-  return {
+  const timing = {
     factory(recipe, { building } = {}) {
       const measured = observedTime(observations, recipe?.itemId, building?.buildingId, 'factory');
       if (measured) return measured;
@@ -68,50 +108,67 @@ export function createProductionTiming({
       const clockKnown = finiteAmount(serverNow);
       const queueKnown = Array.isArray(queue) && queue.every(job => typeof job?.productId === 'string'
         && job.productId && Number.isSafeInteger(job.idx ?? 0) && (job.idx ?? 0) >= 0)
-        && new Set(queue.map(jobKey)).size === queue.length;
+        && new Set(queue.map(job => job.idx ?? 0)).size === queue.length;
       const timers = queueKnown && clockKnown
         ? queue.filter(job => positiveInteger(job?.finishTime) && job.finishTime > serverNow) : [];
       const observed = timers.length;
-      const cardTypes = new Set();
-      const cardsKnown = Array.isArray(cards) && clockKnown && cards.every(card => {
-        if (![1, 2].includes(card?.type) || !Number.isSafeInteger(card.endTime) || cardTypes.has(card.type)) return false;
-        cardTypes.add(card.type);
-        return true;
-      });
-      let extra = 0, expiresAt = null;
+      const entitled = secondLane.until > 0;
+      const entitledCount = entitled ? 2 : 1;
+      let expiresAt = entitled && Number.isFinite(secondLane.until) ? secondLane.until : null;
       const reasons = [];
-      for (const card of cardsKnown ? cards : []) {
-        if (card.endTime !== -1 && card.endTime <= serverNow) continue;
-        const id = card.type === 1 ? '普通月卡' : '高级月卡';
-        const row = table(config, 'MonthCardCfg').find(row => row.id === id);
-        const amount = row?.effectList?.find(([effect]) => effect === '第二生产位')?.[1];
-        if (!positiveInteger(amount) || amount < extra) continue;
-        if (amount > extra) expiresAt = card.endTime === -1 ? null : card.endTime;
-        else if (card.endTime === -1 || expiresAt === null) expiresAt = null;
-        else expiresAt = Math.max(expiresAt, card.endTime);
-        extra = amount;
-      }
-      const count = Math.max(1, observed);
-      const estimated = observed === 0 || observed < 1 + extra || !cardsKnown || observed > 1 + extra;
+      const count = Math.max(entitledCount, observed);
+      const estimated = !queueKnown || !secondLane.known || observed > entitledCount;
       if (observed > 0) reasons.push('当前队列有 ' + observed + ' 个带完成时间的生产任务');
-      if (extra > 0 && observed < 1 + extra) reasons.push('月卡额外生产位尚缺并行计时证据，新增任务按已观察的生产位安排');
-      if (!cardsKnown) reasons.push('月卡权益和有效期未完整读取');
+      if (entitled) reasons.push('有效月卡已开启第二生产位');
+      if (!secondLane.known) reasons.push('月卡权益和有效期未完整读取');
       if (!queueKnown) reasons.push('当前工厂队列未完整读取');
       if (!clockKnown) reasons.push('当前服务端时间未确认');
-      if (observed > 1 && (!cardsKnown || observed > 1 + extra)) {
+      if (observed > entitledCount) {
         expiresAt = serverNow;
         reasons.push('已有并行任务继续计时，新增任务按普通生产位估算');
       }
-      if (count === 1) expiresAt = null;
-      if (expiresAt !== null) reasons.push('额外生产位只计至月卡有效期，随后按 1 个生产位安排新增任务');
-      if (!observed && !extra) reasons.push('暂按每厂 1 个生产位估算');
-      return { count, source: observed ? 'observed' : 'default-estimate',
-        estimated, expiresAt, afterExpiry: 1, reasons };
+      if (entitled && expiresAt !== null) reasons.push('第二位的新任务仅计入预计可在月卡到期前完成的部分');
+      if (!observed && !entitled && !secondLane.known) reasons.push('暂按每厂 1 个生产位估算');
+      const source = entitled || !observed && secondLane.known ? 'month-card' : observed ? 'observed' : 'default-estimate';
+      return { count, source, estimated, expiresAt, afterExpiry: 1, reasons };
+    },
+
+    factoryQueue(building, queue = building?.factory?.factoryQ ?? []) {
+      const lanes = timing.lanes(building);
+      const now = finiteAmount(serverNow) ? serverNow : 0;
+      const finishes = Array(lanes.count).fill(now);
+      const jobs = [], missing = [];
+      const timed = queue.filter(job => positiveInteger(job.finishTime));
+      const active = timed.filter(job => job.finishTime > now);
+      const server = { source: 'server', estimated: false };
+      for (const job of timed) {
+        if (job.finishTime <= now) jobs.push({ job, index: 0, start: now, finish: now, basis: server });
+      }
+      // The protocol has job IDs but no lane IDs. Conservatively assign the
+      // later timer to the permanent lane when the other lane is temporary.
+      if (lanes.expiresAt !== null) active.sort((a, b) => b.finishTime - a.finishTime);
+      for (const [i, job] of active.entries()) {
+        const index = Math.min(i, finishes.length - 1);
+        finishes[index] = Math.max(finishes[index], job.finishTime);
+        jobs.push({ job, index, start: now, finish: job.finishTime, basis: server });
+      }
+      if (queue.length && !timed.length) missing.push('在产首项完成时刻未确认');
+      for (const job of queue) {
+        if (positiveInteger(job.finishTime)) continue;
+        const basis = timing.factory(recipes.get(job.productId), { building });
+        if (!basis.seconds) { missing.push('排队产物 ' + job.productId + ' 耗时未确认'); continue; }
+        const lane = nextFactoryLane(finishes, lanes.expiresAt, basis.seconds);
+        commitFactoryLane(finishes, lane);
+        jobs.push({ job, ...lane, basis });
+      }
+      return { lanes, finishes, jobs, missing };
     },
   };
+  return timing;
 }
 
 const timingWatchers = new WeakMap();
+export const observedProductionDurations = client => timingWatchers.get(client)?.snapshot() ?? [];
 const jobKey = job => JSON.stringify([job.idx ?? 0, job.productId]);
 const sampleKey = (buildingId, productId) => JSON.stringify([buildingId, productId]);
 

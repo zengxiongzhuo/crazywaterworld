@@ -93,6 +93,33 @@ try {
   assert.equal(await page.locator('#config-root').getByText(/上次保存/).count(), 0);
   console.log('通过：30个模块开关各自归位，旧导航与跨页跳转移除');
 
+  await group('resourceFields');
+  const fieldConfig = page.locator('#config-group-resourceFields');
+  const refillAfterLoss = fieldConfig.getByRole('switch', { name: '失地后自动补齐', exact: true });
+  const ratioMode = fieldConfig.getByRole('radio', { name: '按比例' });
+  const quotaMode = fieldConfig.getByRole('radio', { name: '按配额' });
+  const fieldCount = (resource, mode) => fieldConfig.getByRole('spinbutton', { name: resource + mode, exact: true });
+  assert(await ratioMode.isChecked());
+  assert.equal(await refillAfterLoss.isChecked(), false);
+  await refillAfterLoss.click(); await saved();
+  assert.equal(loadAutomationSettings('config-a').settings.resourceFields.refillAfterLoss, true);
+  assert.equal(loadAutomationSettings('config-a').settings.resourceFields.enabled, false);
+  assert.equal(await fieldCount('汽油', '比例').inputValue(), '3');
+  assert.equal(await fieldCount('种子', '比例').inputValue(), '1');
+  assert.equal(await fieldCount('科技点', '比例').inputValue(), '6');
+  assert.equal(await fieldCount('汽油', '配额').count(), 0);
+  await fieldCount('汽油', '比例').fill('0'); await saved();
+  await quotaMode.check(); await fieldCount('种子', '配额').fill('2'); await saved();
+  assert.equal(await fieldCount('汽油', '比例').count(), 0);
+  await page.reload(); await openConfig(); await group('resourceFields');
+  assert(await quotaMode.isChecked());
+  assert(await refillAfterLoss.isChecked());
+  assert.equal(await fieldCount('种子', '配额').inputValue(), '2');
+  await ratioMode.check(); await saved();
+  assert.equal(await fieldCount('汽油', '比例').inputValue(), '0');
+  await fieldConfig.screenshot({ path: path.join(museumOutput, 'resource-fields-ratio.png'), animations: 'disabled' });
+  console.log('通过：资源田可保存零比例和独立配额，刷新保留分配模式、两套数值及失地补齐开关');
+
   await group('worldBoss');
   const bossReward = page.locator('#config-field-schedule-worldBossRewards');
   assert.equal(await page.locator('[data-config-key="schedule.worldBossRewards"]').count(), 1);

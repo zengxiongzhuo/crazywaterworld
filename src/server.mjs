@@ -1,4 +1,5 @@
 import { serveClientAsset } from './ui-assets.mjs';
+import { normalizeConsoleHost, consoleUrl } from './console-address.mjs';
 import { createConsoleVersion, renderVersionedPage, consoleVersionError } from './console-version.mjs';
 import { createTraceLog, traceJson, redactLog } from './trace-log.mjs';
 import { createProtocolDiagnostics } from './protocol-diagnostics.mjs';
@@ -13,8 +14,10 @@ import {activityRankCatalog,readActivityRanking} from './activity-rankings.mjs';
 import {readActivityStatistics} from './activity-statistics.mjs';
 import { merchantActivity, readMerchantStatus, readMerchantJournal, merchantJournalSummary } from './merchant-activity.mjs';
 import { watchMerchant } from './merchant-monitor.mjs';
-import { giftCodeSummary, startGiftCodeBatch } from './gift-codes.mjs';
-import { initialGiftCodeCatalog } from './gift-code-catalog.mjs';
+import { giftCodeStatus, giftCodeSummary, startGiftCodes, startGiftCodeBatch } from './gift-codes.mjs';
+import { publicGiftCodes } from './gift-code-library.mjs';
+import { createGiftCodeAutomation } from './gift-code-automation.mjs';
+import { paginateGiftRecords, giftRecordsCsv, canRetryGiftRecord, canRetryGiftCode } from './gift-code-records.mjs';
 import {runtimeProgress, museumRuntimeStatus} from './runtime-progress.mjs';
 import {watchTreasureTravel} from './treasure-follow.mjs';
 import { watchGuildShipPushes } from './guild-ships.mjs';
@@ -30,6 +33,10 @@ import {readWorldTarget} from './world-target.mjs';
 import {readWorldBoss} from './world-boss.mjs';
 import { readWeekCalendar, claimReportRewards, rewardData } from './missing-rewards.mjs';
 import { readWorldOverview } from './world-overview.mjs';
+import { previewWorldCityDispatch, runWorldCityDispatch } from './world-city-dispatch.mjs';
+import { readCityDeclare, declareCity, readCityCancelDeclare, cancelCityDeclare, reconcileCityCancelDeclare } from './world-city-declare.mjs';
+import { readCityAssemble, assembleCity } from './world-city-assemble.mjs';
+import { readWorldCityDefence, readWorldCityDefenders, runWorldCityRecruit, reconcileWorldCityRecruit } from './world-city-defence.mjs';
 import { readAllianceRadar } from './alliance-radar.mjs';
 import { planRadarPreview, pendingPetrol } from './dispatch-preview.mjs';
 import { inspectHunt } from './pirates.mjs';
@@ -116,6 +123,7 @@ import { observeAutomationResults } from './automation-result-observer.mjs';
 import { startCapture, stopCapture, captureState, inspectCaptureRecovery, recoverCapture, DEFAULT_PROXY_PORT } from './capture.mjs';
 import { createPhoneLogin, loadDeviceProfile, saveDeviceProfile, DEVICE_PROFILE_PATH } from './phone-login.mjs';
 import { createAlipayLogin } from './alipay-login.mjs';
+import { createWechatLogin } from './wechat-login.mjs';
 import { iconIndex, atlasFile, itemIcon, resourceIcon, materialIcon, heroIcon, heroCard, buildingIcon, workerIcon } from './art.mjs';
 
 const LOG_LIMIT = 400;
@@ -123,6 +131,14 @@ const STREAM_BUFFER_LIMIT = 1024 * 1024;
 const RUN_VERSION = new Date().toISOString();
 const validSpinCount = count => Number.isSafeInteger(count) && count >= 1 && count <= maxCompassSpinCount;
 const merchantTaskKeys = ['merchantTrade', 'merchantRewards', 'tradeTasks'];
+const cityCommands = {
+  declare: { label: '联盟宣战', run: declareCity },
+  cancelDeclare: { label: '取消宣战', run: cancelCityDeclare, confirmCost: true },
+  assemble: { label: '设置集结', run: assembleCity },
+  recruit: { label: '高级募兵', run: runWorldCityRecruit, confirmCost: true },
+  checkCancel: { label: '核对取消宣战', run: reconcileCityCancelDeclare },
+  checkRecruit: { label: '核对募兵', run: reconcileWorldCityRecruit },
+};
 const overviewQueries = ENTRY_QUERIES.filter(({ name }) => [
   'AllResourceRequest', 'AllItemRequest', 'AllHeroRequest', 'MainTaskInfoRequest', 'DailyTaskInfoRequest',
   'AchievementInfoRequest', 'EmailBoxRequest', 'AfkInfoRequest', 'OnWaterRequest', 'MyResFieldsRequest', 'MonthCardRequest',
@@ -146,10 +162,11 @@ const STATE_TEXT = {
   STOPPED: '已停止',
 };
 
-export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs, resourceUpdates = false, resourceUpdater = null, protocol: protocolOverride,
+export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recoveryDelayMs, resourceUpdates = false, resourceUpdater = null, protocol: protocolOverride, giftCodeUpdates = resourceUpdates,
   rotationNow = Date.now, rotationAutomatic = true,
-  alipayLoginController = null,
+  alipayLoginController = null, wechatLoginController = null,
   captureController = { startCapture, stopCapture, captureState, inspectCaptureRecovery, recoverCapture } } = {}) {
+  host = normalizeConsoleHost(host);
   const consoleVersion = createConsoleVersion(PAGE);
   const pageRaw = Buffer.from(renderVersionedPage(PAGE, consoleVersion));
   const pageAsset = { raw: pageRaw, gzip: zlib.gzipSync(pageRaw, { level: 9 }),
@@ -163,6 +180,10 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
   let alipaySaving = false;
   let pendingAlipayLogin = null;
   let cancelledAlipayLoginId = null;
+  const wechatLogin = wechatLoginController ?? createWechatLogin({
+    onEvent: event => { if (event.type === 'error') emit(null, 'warn', event.message, { category: 'system', diagnostic: event.diagnostic }); },
+  });
+  let wechatSaving = false, pendingWechatLogin = null, cancelledWechatLoginId = null;
   const traceLog = createTraceLog(TRACE_PATH, { maxBytes: TRACE_MAX_BYTES });
   const protocolDiagnostics = createProtocolDiagnostics(path.join(DATA_DIR, 'protocol-errors'));
   const globalLog = [];
@@ -315,6 +336,92 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     return result;
   }
 
+  function clearWechatRoles() {
+    pendingWechatLogin?.controller?.abort();
+    clearTimeout(pendingWechatLogin?.expiryTimer);
+    pendingWechatLogin = null;
+  }
+
+  function readWechatRoles(pending) {
+    if (pending.reading) return pending.reading;
+    pending.entry.choices = [];
+    pending.entry.roleError = null;
+    pending.controller = new AbortController();
+    const reading = readPhoneRoles(pending.entry, { signal: pending.controller.signal }).finally(() => {
+      if (pending.reading === reading) pending.reading = null;
+    });
+    pending.reading = reading;
+    return reading;
+  }
+
+  function wechatLoginStatus(id) {
+    const state = wechatLogin.status(id);
+    if (cancelledWechatLoginId !== state.id) cancelledWechatLoginId = null;
+    if (state.id && state.id === cancelledWechatLoginId) {
+      clearWechatRoles();
+      return { ...state, phase: 'cancelled', qrImage: null };
+    }
+    if (state.phase !== 'captured') {
+      clearWechatRoles();
+      return state;
+    }
+    if (pendingWechatLogin?.id !== state.id) {
+      clearWechatRoles();
+      const credential = wechatLogin.takeCredential(state.id);
+      if (!accountId(credential) || credential.source !== 'wechat') throw new Error('微信游戏登录凭证无效，请重新扫码');
+      pendingWechatLogin = {
+        id: state.id, reading: null, controller: null,
+        entry: { credential, userName: '微信账号', choices: [], roleError: null },
+      };
+      const pending = pendingWechatLogin;
+      pending.expiryTimer = setTimeout(() => {
+        if (pendingWechatLogin === pending) clearWechatRoles();
+      }, Math.max(0, state.expiresAt - Date.now()));
+      pending.expiryTimer.unref?.();
+      void readWechatRoles(pendingWechatLogin);
+    }
+    const pending = pendingWechatLogin;
+    const store = loadStore();
+    const idOfAccount = accountId(pending.entry.credential);
+    const existing = store.accounts.find(account => account.id === idOfAccount);
+    return {
+      ...state,
+      phase: pending.reading ? 'reading-roles' : 'captured',
+      choices: roleChoices(pending.entry, store),
+      roleError: pending.entry.roleError,
+      account: { id: idOfAccount, title: existing ? describeAccount(existing).title : '微信账号' },
+    };
+  }
+
+  function requireWechatRoles(id) {
+    if (closing) throw new Error('控制台已关闭');
+    const state = wechatLoginStatus(id);
+    const pending = pendingWechatLogin;
+    if (!pending || pending.id !== id || !['captured', 'reading-roles'].includes(state.phase)
+      || state.expiresAt <= Date.now()) throw new Error('扫码结果已过期或已保存，请重新扫码');
+    return pending;
+  }
+
+  async function saveWechatRole(pending, choice) {
+    // 排队期间扫码可能被取消、过期或刷新，落盘前重新检查本次选择。
+    if (requireWechatRoles(pending.id) !== pending || pending.reading || !pending.entry.choices.includes(choice)) {
+      throw new Error('角色列表已变化，请重新选择角色');
+    }
+    pending.entry.credential = wechatLogin.takeCredential(pending.id);
+    const result = await saveSelectedRole(pending.entry, choice, { sourceLabel: '微信扫码', stopExisting: true,
+      validateSelection() {
+        if (requireWechatRoles(pending.id) !== pending || pending.reading || !pending.entry.choices.includes(choice)) {
+          throw new Error('角色列表已变化或扫码已结束，请重新扫码');
+        }
+      },
+    });
+    pending.entry.credential = null;
+    pending.entry.choices = [];
+    cancelledWechatLoginId = pending.id;
+    clearWechatRoles();
+    return result;
+  }
+
   async function readPhoneWorlds(credential, { signal } = {}) {
     if (closing) throw new Error('控制台已关闭');
     signal?.throwIfAborted();
@@ -427,7 +534,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       validateSelection();
       const store = loadStore();
       const existing = findRoleAccount(store, credential, choice.role);
-      const fallbackLabel = ['alipay', 'douyin'].includes(entry.credential.source) ? '未命名角色' : entry.userName;
+      const fallbackLabel = ['alipay', 'wechat', 'douyin'].includes(entry.credential.source) ? '未命名角色' : entry.userName;
       const label = existing?.label && existing.label !== existing.lastSeen?.nickname ? existing.label : choice.role.nickname || fallbackLabel;
       const { account: selected, created } = upsertAccount(store, credential, { label, role: choice.role });
       rememberWorlds(store, selected, { recentWorlds: entry.choices });
@@ -624,22 +731,23 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
 
   // Share identical clicks until this account's queued operation has finished.
   // 页面读取：队列空闲时照常排队；挂机一轮可持续一分钟以上，此时改在它两次请求之间读取，不等整轮结束。
-  function readJob(session, work) {
+  function readJob(session, work, options) {
     if (closing || session.connectionDrain) return Promise.reject(new Error('账号正在结束当前挑战并恢复阵容，请稍后操作'));
     const client = session.client, generation = session.generation;
     if (!session.queueTail || !client?.connected || !client.interleaveRead
-      || session.connecting || session.syncingProduction || session.productionSyncRequired) return enqueue(session, work);
+      || session.connecting || session.syncingProduction || session.productionSyncRequired) return enqueue(session, work, undefined, options);
     return client.interleaveRead(() => {
       if (closing || session.connectionDrain || session.paused || generation !== session.generation) throw new Error('账号已暂停，已取消排队操作');
       return work();
     });
   }
 
-  function progressionJob(session, account, key, label, action, { read = false } = {}) {
+  function progressionJob(session, account, key, label, action, { read = false, shouldStart } = {}) {
     if (!session.progressionJobs.has(key)) {
       const generation = session.generation;
       const schedule = read ? work => readJob(session, work) : work => enqueue(session, work, label);
       const job = schedule(async () => {
+        if (shouldStart?.() === false) throw new Error('操作已取消，尚未连接游戏');
         if (!read) validateRuntimeSettings(session.preferences, loadConfigSafe());
         const client = await ensureConnected(session, account);
         const enabled = () => session.client === client && client.connected && !session.paused && generation === session.generation;
@@ -2836,6 +2944,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         removed?.pirateAdvance.stop('账号已删除'); removed?.stages.stop('账号已删除'); removed?.mutualAid.stop('账号已删除'); for (const task of removed?.trials.values() ?? []) task.stop('账号已删除');
         if (removed) await closeSessionConnection(removed, { includeWorld: true });
         sessions.delete(account.id);
+        try { publicGiftCodes.removeAccount(account.id); }
+        catch (error) { emit(null, 'warn', '账号已删除，礼包自动兑换设置清理失败：' + error.message); }
         emit(null, 'info', `已删除账号 ${describeAccount(account).title}`);
         json({ ok: true });
         return;
@@ -2899,6 +3009,72 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           json(result);
         } finally {
           alipaySaving = false;
+        }
+        return;
+      }
+
+      // ---- 微信扫码登录 ----
+      if (route === 'POST /api/accounts/wechat-login/start') {
+        needConfirm(jsonBody());
+        if (closing) throw new Error('控制台已关闭');
+        if (wechatSaving) throw new Error('正在保存微信账号，请稍候');
+        const previous = wechatLogin.status();
+        if (previous.id && previous.id === cancelledWechatLoginId) await wechatLogin.cancel(previous.id);
+        const starting = wechatLogin.start();
+        const currentState = wechatLogin.status();
+        if (pendingWechatLogin && (pendingWechatLogin.id !== currentState.id || currentState.phase !== 'captured')) clearWechatRoles();
+        const state = await starting;
+        json(wechatLoginStatus(state.id));
+        return;
+      }
+      if (route === 'GET /api/accounts/wechat-login/status') {
+        json(wechatLoginStatus(parsed.searchParams.get('id') || undefined));
+        return;
+      }
+      if (route === 'POST /api/accounts/wechat-login/cancel') {
+        const { id } = jsonBody();
+        if (typeof id !== 'string' || !id) throw new Error('请选择要取消的扫码会话');
+        wechatLogin.status(id);
+        cancelledWechatLoginId = id;
+        clearWechatRoles();
+        await wechatLogin.cancel(id);
+        json({ ok: true });
+        return;
+      }
+      if (route === 'POST /api/accounts/wechat-login/roles') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (typeof payload.id !== 'string' || !payload.id) throw new Error('扫码结果已过期，请重新扫码');
+        if (wechatSaving) throw new Error('正在保存微信账号，请稍候');
+        const pending = requireWechatRoles(payload.id);
+        void readWechatRoles(pending);
+        json(wechatLoginStatus(payload.id));
+        return;
+      }
+      if (route === 'POST /api/accounts/wechat-login/save') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        if (typeof payload.id !== 'string' || !payload.id) throw new Error('扫码结果已过期，请重新扫码');
+        if (wechatSaving) throw new Error('正在保存微信账号，请稍候');
+        const pending = requireWechatRoles(payload.id);
+        if (pending.reading) throw new Error('正在读取区服和角色，请稍候');
+        if (pending.entry.roleError) throw new Error('角色列表读取失败，请重试后再保存');
+        const choices = pending.entry.choices;
+        const choice = payload.choiceId ? choices.find(item => item.id === String(payload.choiceId))
+          : choices.length === 1 ? choices[0] : null;
+        if (!choice || payload.worldId !== undefined) throw new Error('请选择列表中的区服和角色后再保存');
+        wechatSaving = true;
+        try {
+          const selectedId = loadStore().selectedRoles[loginAccountId(pending.entry.credential)];
+          const session = sessions.get(selectedId) || liveLoginSession(pending.entry.credential);
+          const save = () => saveWechatRole(pending, choice);
+          // 持续挂机占用整轮队列；角色交接锁负责停止旧循环，不能排到它结束后再保存。
+          const result = session && !session.paused && !session.loop.running ? await enqueue(session, save) : await save();
+          // 凭证已落盘，临时授权会话清理失败也应返回已保存的账号。
+          try { await wechatLogin.cancel(payload.id); } catch {}
+          json(result);
+        } finally {
+          wechatSaving = false;
         }
         return;
       }
@@ -3153,14 +3329,87 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       }
 
       // ---- 只读视图 ----
-      if(route==='GET /api/gift-codes/initial'){
-        json(initialGiftCodeCatalog());return;
+      if (parsed.pathname.startsWith('/api/gift-codes')) res.setHeader('cache-control', 'no-store');
+      if (route === 'GET /api/gift-codes/initial' || route === 'POST /api/gift-codes/load') {
+        const payload = req.method === 'POST' ? jsonBody() : null;
+        if (payload) needConfirm(payload);
+        const known = new Map(loadStore().accounts.map(account => [account.id, account]));
+        const selected = payload ? payload.accounts
+          : parsed.searchParams.has('accounts') ? JSON.parse(parsed.searchParams.get('accounts'))
+          : parsed.searchParams.has('account') ? [resolve(parsed).account.id] : [...known.keys()].slice(0, 1);
+        if (!Array.isArray(selected) || selected.some(id => typeof id !== 'string' || !known.has(id))) throw Error('所选账号不存在，请刷新账号列表');
+        if (payload) {
+          try { await publicGiftCodes.refresh({ force: true }); }
+          catch (error) { if (!publicGiftCodes.entries().length) throw error; }
+        }
+        const histories = [...new Set(selected)].map(id => giftCodeStatus(id).rows);
+        for (const rows of histories) publicGiftCodes.reconcile(rows);
+        const available = new Set(histories.flatMap(rows => publicGiftCodes.available(rows)));
+        const displayRows = publicGiftCodes.entries().map(entry => ({
+          code: entry.code, expiresAt: entry.expiresAt ?? null,
+          eligible: !selected.length || available.has(entry.code),
+        }));
+        const tryCodes = displayRows.filter(row => row.eligible).map(row => row.code);
+        json({ ...publicGiftCodes.view(), displayRows, tryCodes, available: tryCodes.length });
+        if (payload) void giftAutomation.check();
+        return;
+      }
+      if (route === 'POST /api/gift-codes/manual') {
+        const payload = jsonBody(); needConfirm(payload);
+        const result = publicGiftCodes.addManualBatch(payload.codes, payload.expiresAt);
+        void giftAutomation.check();
+        json(result);
+        return;
+      }
+      if (route === 'POST /api/gift-codes/auto') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { account } = resolve(parsed);
+        const preference = publicGiftCodes.setAuto(account.id, payload.enabled);
+        let syncError = '';
+        if (preference.enabled) {
+          try { await publicGiftCodes.refresh({ force: true }); } catch (error) { syncError = error.message; }
+          void giftAutomation.check();
+        }
+        json({ enabled: preference.enabled, syncError });
+        return;
+      }
+      if (route === 'GET /api/gift-codes' || route === 'GET /api/gift-codes/export') {
+        const { account } = resolve(parsed);
+        const data = giftCodeStatus(account.id);
+        const status = parsed.searchParams.get('status') || 'exclude-invalid';
+        if (route.endsWith('/export')) {
+          const csv = giftRecordsCsv(data.rows, status);
+          res.writeHead(200, { 'content-type': 'text/csv; charset=utf-8', 'content-disposition': 'attachment; filename="gift-code-records.csv"', 'cache-control': 'no-store' });
+          res.end(csv);
+          return;
+        }
+        const page = paginateGiftRecords(data.rows, {
+          status, page: parsed.searchParams.get('page') || '1', pageSize: parsed.searchParams.get('pageSize') || '10',
+        });
+        json({ ...page, running: data.running, rows: page.rows.map(row => ({ ...row,
+          retryable: canRetryGiftRecord(row) && canRetryGiftCode(data.rows, row.code) && !publicGiftCodes.isExpired(row.code),
+        })) });
+        return;
+      }
+      if (route === 'POST /api/gift-codes/retry') {
+        const payload = jsonBody(); needConfirm(payload);
+        if (typeof payload.code !== 'string' || !payload.code || payload.code.length > 128 || /[\s,，;；]/u.test(payload.code)) throw Error('请选择一条礼包码记录');
+        const { account } = resolve(parsed), target = giftCodeTarget(account);
+        if (target.blocked) throw Error(target.blocked);
+        const job = startGiftCodes(account.id, payload.code, target.dispatch, { stop: '' }, { retry: true });
+        job.done.catch(() => emit(target.session, 'error', '礼包兑换中断，请核对游戏内奖励'));
+        json({ accepted: true });
+        return;
       }
       if(route==='GET /api/gift-codes/accounts'){
         json({accounts:loadStore().accounts.map(account=>{
           const session=sessionFor(account.id);
           const base={id:account.id,title:describeAccount(account).title,paused:session.paused,connected:Boolean(session.client?.connected)};
-          try{return {...base,...giftCodeSummary(account.id)};}
+          try {
+            const { rows } = giftCodeStatus(account.id);
+            publicGiftCodes.reconcile(rows);
+            return { ...base, ...giftCodeSummary(account.id), autoRedeem: publicGiftCodes.auto(account.id).enabled, available: publicGiftCodes.available(rows).length };
+          }
           catch(error){return {...base,running:false,total:0,counts:{},error:error.message};}
         })});return;
       }
@@ -3172,14 +3421,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const targets=[...new Set(payload.accounts)].map(id=>{
           const account=known.get(id);
           if(!account)return {id,title:id,blocked:'账号不存在'};
-          const session=sessionFor(id),generation=session.generation;
-          return {id,session,title:describeAccount(account).title,blocked:session.paused?'账号已暂停托管':'',dispatch:action=>{
-            const latest=loadStore().accounts.find(item=>item.id===id);
-            if(!latest||session.generation!==generation||session.paused)throw Error('原账号连接已变化');
-            return progressionJob(session,latest,'gift-code-redeem',null,action);
-          }};
+          const target = giftCodeTarget(account);
+          if (payload.library === true) {
+            const { rows } = giftCodeStatus(id);
+            publicGiftCodes.reconcile(rows);
+            target.codes = publicGiftCodes.available(rows).join('\n');
+          }
+          return target;
         });
-        const results=startGiftCodeBatch(targets,payload.codes).map((result,index)=>({...result,...targets[index]}));
+        const results=startGiftCodeBatch(targets,payload.library===true?null:payload.codes).map((result,index)=>({...result,...targets[index]}));
         const started=results.filter(result=>result.accepted);
         if(!started.length)throw Error(results.map(result=>result.title+'：'+result.error).join('；'));
         for(const {done,session} of started)done.then(()=>emit(session,'info','礼包兑换完成，请查看账号结果汇总'),()=>emit(session,'error','礼包兑换中断，请核对游戏内奖励'));
@@ -3333,10 +3583,20 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
         const payload = jsonBody();
         needConfirm(payload);
         const label = operationLabels[parsed.pathname];
-        const key = JSON.stringify([route, payload.techId, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
+        const key = route === 'POST /api/guild/tech/upgrade'
+          ? JSON.stringify([route, payload.techId, payload.expectedIdentity, payload.expectedLevel, payload.maxCost])
+          : JSON.stringify([route, payload.techId, payload.heroId, payload.uid, payload.expectedLevel, payload.maxCost, payload.targetKey, payload.fleetKey, payload.buildingId, payload.previewKey]);
         json(await progressionJob(session, account, key, label, async (client, enabled) => {
           const config = loadConfigSafe(), player = session.player;
-          if(route==='POST /api/guild/tech/upgrade'){const result=await upgradeGuildTech(client,config,player,{...payload,enabled,ledger:usageFor(session)});emit(session,'info',result.label);return result;}
+          if (route === 'POST /api/guild/tech/upgrade') {
+            const { techId, expectedLevel, maxCost, expectedIdentity } = payload;
+            const result = await upgradeGuildTech(client, config, player, {
+              techId, expectedLevel, maxCost, expectedIdentity, ledger: usageFor(session),
+              enabled: () => session.player === player && enabled(),
+            });
+            emit(session, 'info', result.label);
+            return result;
+          }
           if (route === 'POST /api/equipment/wear') {
             const result = await equipHeroEmptySlots(client, config, player.level, payload.heroId, enabled);
             for (const line of result.lines) emit(session, 'info', line);
@@ -3645,6 +3905,122 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           session.siliconOverviewRead = job;
         }
         json(await session.siliconOverviewRead); return;
+      }
+      if (route === 'GET /api/world/city-actions' || route === 'GET /api/world/city-defence') {
+        const { session } = scoped_(parsed);
+        const { client, player, generation } = session;
+        if (!client?.connected || !player || session.paused) throw Error('请先连接当前账号，再选择城池');
+        const cityId = Number(parsed.searchParams.get('cityId')), scenarioId = Number(parsed.searchParams.get('scenarioId'));
+        if (!Number.isSafeInteger(cityId) || cityId <= 0 || cityId > 2147483647 || scenarioId !== (player.scenarioId || 1))
+          throw Error('城池或场景已变化，请刷新地图重新选择');
+        const config = loadConfigSafe();
+        if (!config) throw Error('城市配置未同步，请更新游戏资源');
+        const identity = () => [player.worldId, player.playerId, player.guildId].map(exactAutomationId).join('/');
+        const before = identity(), protocol = protocolFor(client), target = { scenarioId, cityId };
+        const sameCitySession = () => session.client === client && client.connected && session.player === player && !session.paused
+          && !session.connectionDrain && !closing && session.generation === generation && identity() === before
+          && (player.scenarioId || 1) === scenarioId && loadConfigSafe() === config;
+        res.setHeader('Cache-Control', 'no-store');
+        if (route === 'GET /api/world/city-defence') {
+          const roster = await readJob(session, async () => {
+            if (res.destroyed) return;
+            if (!sameCitySession()) throw Error('账号或场景已变化，请重新选择城池');
+            return readWorldCityDefenders(client, protocol, config, player, target);
+          }, { recoverFormation: false });
+          if (res.destroyed) return;
+          if (!sameCitySession()) throw Error('账号或场景已变化，请重新选择城池');
+          json(roster); return;
+        }
+        const ledger = usageFor(session), { settings, revision } = settingsView(session);
+        const enabled = () => sameCitySession() && refreshSessionSettings(session).revision === revision;
+        const validate = () => { if (!enabled()) throw Error('账号、场景或配置已变化，请重新选择城池'); };
+        const previews = await readJob(session, async () => {
+          if (res.destroyed) return;
+          validate();
+          // 点同一城只读一次联盟、城市及宣战信息。游戏提示不带请求编号，按顺序读取。
+          const reads = new Map();
+          let tail = Promise.resolve();
+          const request = (name, body = {}, response, timeout) => {
+            const key = JSON.stringify([name, body]);
+            if (!reads.has(key)) {
+              const job = tail.then(() => {
+                if (res.destroyed) throw Error('已离开城池');
+                return client.request(name, body, response, timeout);
+              });
+              tail = job.catch(() => {});
+              reads.set(key, job);
+            }
+            return reads.get(key);
+          };
+          const options = { request, ledger };
+          return Promise.all([
+            previewWorldCityDispatch(client, protocol, config, player, settings, ledger, target, { request }),
+            readCityDeclare(client, protocol, config, player, target, options),
+            readCityCancelDeclare(client, protocol, config, player, target, options),
+            readCityAssemble(client, protocol, config, player, target, options),
+            readWorldCityDefence(client, protocol, config, player, target, { ...options, includeDefenders: parsed.searchParams.get('includeDefenders') !== '0' }),
+          ]);
+        }, { recoverFormation: false });
+        if (res.destroyed) return;
+        const [dispatch, declaration, cancellation, assembly, defence] = previews;
+        validate();
+        const quotes = session.worldCityQuotes ??= new Map();
+        const expiresAt = Date.now() + 120000;
+        const actions = { declare: declaration, cancelDeclare: cancellation, assemble: assembly,
+          recruit: { ...defence.recruit, available: defence.recruit.allowed },
+          checkCancel: { available: cancellation.pending }, checkRecruit: { available: defence.recruit.pending } };
+        const token = dispatch.fleets.length > 0 || Object.values(actions).some(view => view.available) ? randomUUID() : null;
+        if (token) {
+          for (const [key, quote] of quotes) {
+            if ((!quote.job || quote.completed) && (quote.expiresAt <= Date.now() || quotes.size >= 100)) quotes.delete(key);
+          }
+          if (quotes.size >= 100) throw Error('已有城池操作排队，请稍后再试');
+          quotes.set(token, { client, player, config, target, dispatch, actions, expiresAt, validate });
+        }
+        const availability = view => ({ allowed: view.available, visible: view.visible, reason: view.reason });
+        json({ token, expiresAt, dispatch,
+          declare: { ...availability(declaration), count: declaration.count, limit: declaration.limit, owner: declaration.owner },
+          cancelDeclare: { ...availability(cancellation), cost: cancellation.cost, pending: cancellation.pending },
+          assemble: { ...availability(assembly), currentCityId: assembly.currentCityId, currentName: assembly.currentName, role: assembly.role },
+          recruit: { ...availability(actions.recruit), pending: defence.recruit.pending, itemId: defence.recruit.itemId, cost: defence.recruit.cost,
+            gain: defence.recruit.gain, stock: defence.recruit.stock },
+          defence: defence.deferred === undefined ? { synced: defence.synced, reason: defence.reason, defenders: defence.defenders }
+            : defence.deferred ? { deferred: true } : null });
+        return;
+      }
+      if (route === 'POST /api/world/city-actions') {
+        const payload = jsonBody();
+        needConfirm(payload);
+        const { session } = scoped_(parsed), { action, buildingId } = payload;
+        const quote = session.worldCityQuotes?.get(payload.token);
+        if (!quote || quote.target.cityId !== payload.cityId) throw Error('城池确认已失效，请重新选择');
+        const dispatch = action === 'dispatch';
+        const command = typeof action === 'string' && Object.hasOwn(cityCommands, action) ? cityCommands[action] : null;
+        const allowed = dispatch ? quote.dispatch.fleets.some(f => f.buildingId === buildingId)
+          : command && buildingId === undefined && quote.actions[action].available;
+        if (!allowed) throw Error('请选择当前城池可用的操作或空闲舰队');
+        if (command?.confirmCost && payload.confirmedCost !== quote.actions[action].cost) throw Error('请重新核对本次操作的消耗');
+        if (quote.job && (quote.action !== action || quote.buildingId !== buildingId)) throw Error('这次确认已用于其他操作，请重新选择');
+        if (!quote.job) {
+          quote.action = action;
+          quote.buildingId = buildingId;
+          const label = dispatch ? '城池派遣' : command.label;
+          quote.job = enqueue(session, async () => {
+            const validate = () => {
+              quote.validate();
+              if (Date.now() >= quote.expiresAt) throw Error('城池确认已过期，请刷新可用操作');
+            };
+            validate();
+            const { client, config, player, target } = quote, protocol = protocolFor(client), ledger = usageFor(session);
+            const result = dispatch
+              ? await runWorldCityDispatch(client, protocol, config, player, settingsView(session).settings, ledger,
+                { ...target, buildingId, intent: quote.dispatch.intent, role: quote.dispatch.role, cost: quote.dispatch.cost, owner: quote.dispatch.owner }, { validate })
+              : await command.run(client, protocol, config, player, { ...quote.actions[action], ...target }, { validate, ledger });
+            emit(session, result.confirmed || result.status === 'confirmed' ? 'info' : 'warn', label + ' · ' + result.message);
+            return result;
+          }, label).finally(() => { quote.completed = true; });
+        }
+        json(await quote.job); return;
       }
       if (route === 'GET /api/world/overview') {
         const {session}=scoped_(parsed);
@@ -4525,7 +4901,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       pirateAdvance: session.pirateAdvance.view(),
       controls: automationControlView(settingsView(session).settings).filter(control => !control.taskKey || isActivityTaskAvailable(control.taskKey, session.client)).map(control=>{
         const aliases={'factory.produce':'startProduce','factory.cooperateNative':'nativeProduce','factory.gain':'collect','factory.speedUp':'speedUp','building.build':'build','building.upgrade':'upgrade','building.finish':'finishUpgrade','resident.enabled':'finishOrder','resident.reroll':'denyOrder','farm.enabled':'farm','radar.enabled':'联盟情报','treasure.enabled':'万吨巨轮','cityWar.enabled':'城战接续','forge.enabled':'装备锻造','antique.enabled':'藏品养成','dailies.claimTasks':'dailyRewards','dailies.claimDailyChest':'chests','dailies.claimWeeklyChest':'chests','dailies.claimGift':'gift','resident.rewards':'orderDaily','trials.paid':'trialPaidSweep','trials.ads':'trialAdSweep'};
-        const key=control.taskKey||aliases[control.key]||({'worldBoss.enabled':'worldBoss','gather.fishing':'autoFish','gather.upgradeFishing':'fishEnhance','gather.diving':'autoDive','gather.salvage':'autoSalvage','gather.upgradeDiving':'diveEnhance','gather.upgradeSalvage':'salvageEnhance','gather.floaters':'floaters','gather.antiqueFloaters':'antiqueFloaters','cargo.enabled':'cargo','building.collect':'collect','building.supply':'buildSupply','building.speedUp':'speedUp','gold.enabled':'paidGold'})[control.key]||control.key;
+        const key=control.taskKey||aliases[control.key]||({'worldBoss.enabled':'worldBoss','gather.fishing':'autoFish','gather.upgradeFishing':'fishEnhance','gather.diving':'autoDive','gather.salvage':'autoSalvage','gather.upgradeDiving':'diveEnhance','gather.upgradeSalvage':'salvageEnhance','gather.floaters':'floaters','gather.antiqueFloaters':'antiqueFloaters','cargo.enabled':'cargo','building.collect':'collect','building.supply':'buildSupply','building.speedUp':'speedUp'})[control.key]||control.key;
         const challengeKeys=control.key==='progression.mainline'?['stageAuto']:control.key==='pirateHunt.enabled'?['pirateAuto']:control.key==='progression.trials'?settingsView(session).settings.progression.raidIds.map(id=>'trialAuto:'+id):[key];
         const recorded=challengeKeys.map(k=>loop.controlStatus?.get(k)).filter(Boolean).sort((a,b)=>(b.checkedAt??0)-(a.checkedAt??0))[0],observed=rewards?.status(key);
         let state=(observed?.checkedAt??0)>(recorded?.checkedAt??0)?observed:recorded||observed;
@@ -4553,7 +4929,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       stopping: !!loop.controller?.signal.aborted,
       tasks: automationTasks.filter(task => !retiredAutomationTasks.has(task.key) && isActivityTaskAvailable(task.key, session.client)).map(({ key, label, group }) => ({
         key, label, group, enabled: loop.tasks[key], blockedBySettings: loop.tasks[key] && !nativePreferenceEnabled(session.preferences, key),
-        nextCheck: loop.tasks[key] && nativePreferenceEnabled(session.preferences, key) ? rewards?.nextCheck(key) : null,
+        nextCheck: loop.tasks[key] && nativePreferenceEnabled(session.preferences, key) ? rewards?.nextCheck(key === 'paidGold' ? 'gold.enabled' : key) : null,
       })),
       fishingGoldReserve: loop.fishingGoldReserve,
       compassSpinCount: session.preferences?.eventActions.compassDrawCount ?? loop.compassSpinCount,
@@ -4567,6 +4943,18 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
     };
   }
 
+  function giftCodeTarget(account) {
+    const id = account.id, session = sessionFor(id), generation = session.generation;
+    return { id, session, title: describeAccount(account).title, blocked: session.paused ? '账号已暂停托管' : '', dispatch: (action, { shouldStart } = {}) => {
+      const latest = loadStore().accounts.find(item => item.id === id);
+      if (!latest || session.generation !== generation || session.paused) throw Error('原账号连接已变化');
+      return progressionJob(session, latest, 'gift-code-redeem', null, action, { shouldStart });
+    } };
+  }
+  const giftAutomation = createGiftCodeAutomation({
+    library: publicGiftCodes, accounts: () => loadStore().accounts, targetFor: giftCodeTarget,
+    refresh: giftCodeUpdates, report: message => emit(null, 'warn', message),
+  });
   const server = http.createServer((req, res) => {
     res.on('error', () => { streams.delete(res); res.destroy(); });
     req.on('error', () => res.destroy());
@@ -4589,10 +4977,15 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       const recovery = captureController.inspectCaptureRecovery();
       if (recovery.pending) emit(null, 'warn', recovery.error || recovery.message || '检测到上次采集残留，请在账号页恢复', { category: 'system' });
       await resources?.start();
-      return new Promise((resolve) => {
+      return new Promise((resolve, reject) => {
+        const listenFailed = error => reject(error);
+        server.once('error', listenFailed);
         server.listen(port, host, () => {
-          const address = `http://${host}:${server.address().port}`;
+          server.off('error', listenFailed);
+          const address = consoleUrl(host, server.address().port);
+          if (host === '0.0.0.0' || host === '::' || host === '0:0:0:0:0:0:0:0') emit(null, 'info', `控制台监听 ${host}，其他设备请使用这台电脑的局域网 IP 和端口 ${server.address().port}`);
           emit(null, 'info', `控制台已启动 ${address}`);
+          giftAutomation.start();
           fs.watchFile(settingsFile(), { interval: 1000, persistent: false }, settingsFileChanged);
           settingsWatchStarted = true;
           for (const account of loadStore().accounts) {
@@ -4616,11 +5009,14 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
       });
     },
     close: async () => {
+      giftAutomation.close();
       closing = true;
       if (settingsWatchStarted) fs.unwatchFile(settingsFile(), settingsFileChanged);
       const rotationsClosed = roleRotations.close();
       clearAlipayRoles();
       await alipayLogin.close();
+      clearWechatRoles();
+      await wechatLogin.close();
       for (const client of phonePreviewClients) client.stop();
       phonePreviewClients.clear();
       pendingPhoneLogins.clear();

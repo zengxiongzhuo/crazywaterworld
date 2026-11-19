@@ -450,7 +450,7 @@ try {
     assert.throws(() => importAutomationSettings(unknown), /不支持/);
   });
   test('版本1升级后重复迁移保持一致，保留有效的用户值', () => {
-    assert.equal(SETTINGS_SCHEMA_VERSION, 14);
+    assert.equal(SETTINGS_SCHEMA_VERSION, 16);
     const settings = legacySettings();
     settings.factory.checkEverySeconds = 270;
     settings.resources.diamondDailyLimit = 1234;
@@ -464,6 +464,33 @@ try {
     assert.equal(exported.version, SETTINGS_SCHEMA_VERSION);
     assert.deepEqual(importAutomationSettings(exported), migrated);
     assert.deepEqual(importAutomationSettings(exportAutomationSettings(importAutomationSettings(exported))), migrated);
+  });
+  test('旧货轮开关迁移为类型多选，保留兜底和显式空选', () => {
+    const all = ['ORANGE', 'PURPLE', 'BLUE'];
+    assert.deepEqual(defaultSettings().treasure.qualities, all);
+    for (const version of [1, 15]) for (const flag of [true, false, undefined]) {
+      const old = defaultSettings();
+      delete old.treasure.qualities;
+      if (flag !== undefined) old.treasure.onlyTenThousand = flag;
+      Object.assign(old.treasure, { fallbackEnabled: true, fallbackQualities: ['BLUE'] });
+      const expected = { ...old.treasure, qualities: flag ? ['ORANGE'] : all };
+      delete expected.onlyTenThousand;
+      fs.writeFileSync(file, JSON.stringify({ version, accounts: { test: { settingsVersion: version, revision: 7, settings: old } } }));
+      const before = fs.readFileSync(file);
+      const loaded = loadAutomationSettings('test', { file });
+      assert.deepEqual(loaded.settings.treasure, expected);
+      assert.deepEqual(importAutomationSettings({ format: SETTINGS_FORMAT, version, settings: old }).treasure, expected);
+      assert.deepEqual(fs.readFileSync(file), before);
+      const saved = saveAutomationSettings('test', loaded.settings, { file, revision: 7 });
+      assert.deepEqual(loadAutomationSettings('test', { file }).settings.treasure, expected);
+      assert.deepEqual(exportAutomationSettings(saved.settings).settings.treasure, expected);
+      if (flag !== undefined) assert.deepEqual(validateSettings(old).treasure, expected, '已打开的旧版页面可以保存');
+    }
+    const both = defaultSettings();
+    Object.assign(both.treasure, { onlyTenThousand: false, qualities: [] });
+    assert.deepEqual(importAutomationSettings({ format: SETTINGS_FORMAT, version: 15, settings: both }).treasure.qualities, []);
+    both.treasure.onlyTenThousand = 'false';
+    assert.throws(() => validateSettings(both), error => !!error.fields?.['treasure.onlyTenThousand']);
   });
   test('保存一个账号不会将未迁移的其他账号误标为当前版本', () => {
     const old = { revision: 8, savedAt: 'legacy-time', settings: legacySettings() };

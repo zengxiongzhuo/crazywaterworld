@@ -95,7 +95,7 @@ try {
     assert.equal(f.client.writes.length, 1);
   });
   await test('保存新配置后必须重新确认，清空会话后不能重用旧token', async () => {
-    const q = await quote(), settings = defaultSettings(); settings.resourceFields.preferredResource = '种子';
+    const q = await quote(), settings = defaultSettings(); settings.resourceFields.ratios.seeds = 2;
     saveAutomationSettings('one', settings, { revision: 0 });
     assert.equal((await post('action', payload(q))).ok, false);
     session.resourceFieldQuotes.clear(); assert.equal((await post('action', payload(completed))).ok, false);
@@ -150,7 +150,7 @@ try {
     for (const kind of ['otherAccount', 'expired', 'settings', 'generation', 'paused', 'fleetBusy', 'cityLost', 'fuel']) {
       const g = await replacementFixture(), q = await g.preview(); assert(q.token, kind);
       if (kind === 'expired') g.session.resourceFieldQuotes.get(q.token).expiresAt = Date.now() - 1;
-      if (kind === 'settings') { const settings = defaultSettings(); settings.resourceFields.preferredResource = '种子'; saveAutomationSettings(g.account, settings, { revision: 0 }); }
+      if (kind === 'settings') { const settings = defaultSettings(); settings.resourceFields.allocationMode = 'quota'; saveAutomationSettings(g.account, settings, { revision: 0 }); }
       if (kind === 'generation') g.session.generation++;
       if (kind === 'paused') g.session.paused = true;
       if (kind === 'fleetBusy') g.state.fleets[0].state = 3;
@@ -204,7 +204,7 @@ try {
   const giveUpPayload = q => ({ confirm: true, token: q.token });
   await test('零汽油且没有空闲舰队仍可单独放弃，自动化配置保持不变', async () => {
     const g = await replacementFixture(), settings = defaultSettings();
-    Object.assign(settings.resourceFields, { enabled: true, fleetIds: ['1远征船'], preferredResource: '种子' });
+    Object.assign(settings.resourceFields, { enabled: true, fleetIds: ['1远征船'], ratios: { fuel: 0, seeds: 1, tech: 0 } });
     saveAutomationSettings(g.account, settings, { revision: 0 });
     g.state.fuel = 0; for (const fleet of g.state.fleets) fleet.state = 3;
     const q = await g.preview(giveUpIntent());
@@ -238,7 +238,7 @@ try {
     for (const kind of ['forged', 'unconfirmed', 'otherAccount', 'expired', 'settings', 'generation', 'paused', 'notOwned']) {
       const g = await replacementFixture(), q = await g.preview(giveUpIntent()); assert(q.token, kind);
       if (kind === 'expired') g.session.resourceFieldQuotes.get(q.token).expiresAt = Date.now() - 1;
-      if (kind === 'settings') { const settings = defaultSettings(); settings.resourceFields.preferredResource = '公会科技点'; saveAutomationSettings(g.account, settings, { revision: 0 }); }
+      if (kind === 'settings') { const settings = defaultSettings(); settings.resourceFields.ratios.tech = 4; saveAutomationSettings(g.account, settings, { revision: 0 }); }
       if (kind === 'generation') g.session.generation++;
       if (kind === 'paused') g.session.paused = true;
       if (kind === 'notOwned') g.state.fields = g.state.fields.filter(field => field.gridIdx !== 20);

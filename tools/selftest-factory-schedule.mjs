@@ -49,6 +49,10 @@ test('空闲产能可按配置复查，满队列无时间时也不会无界等�
   assert.equal(nextFactoryCheck([], { now:1_000_000, checkEverySeconds:0 }), 1_001_000);
   assert.equal(nextFactoryCheck([], { now:1_000_000, checkEverySeconds:999 }), 1_300_000);
 });
+test('升级中的已建工厂有空格时按补料间隔复查', () => {
+  const building = factory([job(0, 1100)], [], { buildStartTime: 990, buildFinishTime: 1200 });
+  assert.equal(nextFactoryCheck([building], { now: 1_000_000, slots: 6, checkEverySeconds: 9 }), 1_009_000);
+});
 test('未建成、禁用工厂不触发紧急检查；原生目标仍保留兜底复查', () => {
   assert.equal(nextFactoryCheck([factory([], [item(1)], {level:0})], {now:1_000_000,checkEverySeconds:19}),1_019_000);
   assert.equal(nextFactoryCheck([factory([], [item(1)])], {now:1_000_000,checkEverySeconds:19,eligible:()=>false}),1_019_000);

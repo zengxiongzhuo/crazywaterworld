@@ -34,7 +34,7 @@ function fixture() {
     BuildingUpgradeCfg: [{ buildingType: '宠物培育室', level: 3, effect: [['培育队列', 3]] }],
     MuseumExpeditionTeamCfg: [{ playerLevel: 28, teamCount: 3 }],
     MuseumAreaIndicatorCfg: [{ areaId: 1, areaLevel: 1, level: 1, upgradeCost: ['木板', 5] }],
-    OfflineParamCfg: [{ paramName: '点金价格', paramValue: 10 }],
+    OfflineParamCfg: [{ paramName: '点金价格', paramValue: 10 }, { paramName: '免费点金次数', paramValue: 1 }],
   }).map(([name, data]) => [name, { data }])) };
   const room = { buildingId: '1宠物培育室', type: '宠物培育室', level: 3,
     petBreed: { maxQLength: 3, breedQ: [{ idx: 1 }, { idx: 2 }, { idx: 3 }], maturePets: [] } };
@@ -44,7 +44,7 @@ function fixture() {
     world: { stock, have: id => stock.get(id) ?? 0, factories: [], stockCap: 1000, serverNow: 1000,
       buildings: [room, { buildingId: '1博物馆', type: '博物馆', level: 1 }] },
     museum: { exhibitions: [], exploreStages: [], popularity: 0, claimedAchievements: [] },
-    gold: { info: { paidTimes: 0, maxPaidTimes: 3 } }, pets: [], heroes: [], choices: [], choiceObserved: false,
+    gold: { info: { freeTimes: 1, paidTimes: 0, maxPaidTimes: 3 } }, pets: [], heroes: [], choices: [], choiceObserved: false,
   };
   return { settings, config, snapshot, room };
 }
@@ -269,10 +269,13 @@ try {
 
   await test('挂机正常入口使用隔离状态并保留本轮汇总提示', async () => {
     const f = fixture();
+    f.settings.dailies.enabled = true;
+    const reset = Math.floor(Date.now() / 1000) + 3600;
     const client = new EventEmitter();
     client.setMaxListeners(100);
     client.connected = true;
     const replies = {
+      DailyTaskInfoRequest: { dailyResetTime: reset, dailyTask: [{ id: 1006, progress: 3, targetProgress: 3, rewardClaimed: true }] },
       OnWaterRequest: { building: f.snapshot.world.buildings, workerOrder: [] },
       AllItemRequest: { items: [] }, AllResourceRequest: { list: [] },
       MuseumInfoRequest: f.snapshot.museum, AllHeroRequest: { heroes: [] }, ClickGoldInfoRequest: f.snapshot.gold,
@@ -287,9 +290,15 @@ try {
     const protocol = createDeclaredProtocol(Object.keys(replies).flatMap(name => [name, name.replace(/Request$/, 'Response')]));
     const result = await runLoop(client, protocol, {
       config: f.config, player: f.snapshot.player, rounds: 1, allowMutate: true,
-      getSettings: () => f.settings, isEnabled: () => false,
+      getSettings: () => f.settings, isEnabled: key => ['freeGold', 'paidGold'].includes(key),
     });
     const rewards = rewardSchedule(client);
+    assert.match(rewards.status('freeGold')?.text ?? '', /3\/3/);
+    assert.equal(rewards.nextCheck('freeGold'), reset);
+    assert.equal(rewards.status('paidGold'), null);
+    assert.equal(rewards.nextCheck('paidGold'), null);
+    assert.match(rewards.status('gold.enabled')?.text ?? '', /付费点金/);
+    assert(rewards.nextCheck('gold.enabled') < reset);
     assert(reads.includes('MuseumInfoRequest'), '正常挂机入口必须读取博物馆状态');
     assert.match(rewards.status('pet.enabled')?.text ?? '', /海兽培育队列已满/);
     for (const key of ['museum.runEnabled', 'museum.enabled', 'museum.upgrade']) {
@@ -339,9 +348,16 @@ try {
       app.sessions.get('base-detailed').loop.controlStatus = new Map([['museum.runEnabled', {
         text: '昨天的海兽满队列提示', state: 'waiting', checkedAt: current - 86400,
       }]]);
-      observeBaseAutomationPlan(rewardSchedule(clients.get('base-detailed')),
+      const detailedRewards = rewardSchedule(clients.get('base-detailed'));
+      detailedRewards.observe('paidGold', '3/3 · 今日目标已完成');
+      detailedRewards.defer('paidGold', current + 3600);
+      observeBaseAutomationPlan(detailedRewards,
         planBaseAutomation(detailed.snapshot, detailed.config, detailed.settings), detailed.settings, 30000);
       const detailedView = await read('base-detailed');
+      const gold = detailedView.controls.find(row => row.key === 'gold.enabled');
+      assert.match(gold.observation.text, /付费点金/);
+      assert.equal(gold.nextCheck, detailedRewards.nextCheck('gold.enabled'));
+      assert.equal(detailedView.tasks.find(row => row.key === 'paidGold').nextCheck, gold.nextCheck);
       for (const key of ['museum.runEnabled', 'museum.enabled', 'museum.upgrade']) {
         const control = detailedView.controls.find(row => row.key === key);
         assert.match(control.observation.text, /已核对/);

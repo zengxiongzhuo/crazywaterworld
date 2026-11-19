@@ -274,7 +274,12 @@ export function createActionGuard(client, getSettings, ledger, { enabled = () =>
       let ticket = null;
       if (settings && Object.values(counters).some(Boolean)) {
         if (!ledger) throw new AutomationSkip('无法记录当日用量，已跳过本次消费');
-        try { ticket = ledger.reserve(counters, usageLimits(settings), step.counterMinimums); }
+        let options;
+        if (step.kind === 'paidGold') {
+          if (step.body?.times !== counters.goldPaidTimes) throw new AutomationSkip('付费点金请求次数与预留次数不符');
+          options = { paidGold: { paidBefore: step.verify?.paidBefore, resetTime: step.verify?.resetTime, account } };
+        }
+        try { ticket = ledger.reserve(counters, usageLimits(settings), step.counterMinimums, options); }
         catch (error) { throw new AutomationSkip(error.message); }
       }
       let materials, gold, operation;

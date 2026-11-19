@@ -26,7 +26,7 @@ export function nextFactoryCheck(buildings, {
     // is usable on its own; never invent a start time for the waiting slots.
     for (const time of times) deadline = Math.min(deadline, time > now ? time : progressed ? now + MIN_CHECK_MS : fallback);
     if (!times.length) deadline = Math.min(deadline, fallback);
-    const canStart = produce && produceEligible(building) && !(building.buildStartTime > 0 || building.buildFinishTime > 0);
+    const canStart = produce && produceEligible(building);
     if (canStart && (!Number.isSafeInteger(slots) || slots < 1 || queue.length < slots)) deadline = Math.min(deadline, fallback);
     // Existing native automation is never taken over here. A fallback check
     // still notices its expiry or a newly needed cooperative target.

@@ -23,6 +23,7 @@ const resourceFieldsCss = readFileSync(new URL('./resource-fields.css', import.m
 import {mapMotionPosition} from './world-map-geometry.mjs';
 const phoneLoginScript = readFileSync(new URL('./phone-login-ui.js', import.meta.url), 'utf8');
 const alipayLoginScript = readFileSync(new URL('./alipay-login-ui.js', import.meta.url), 'utf8');
+const wechatLoginScript = readFileSync(new URL('./wechat-login-ui.js', import.meta.url), 'utf8');
 const accountAddScript = readFileSync(new URL('./account-add-ui.js', import.meta.url), 'utf8');
 const accountBackupScript = readFileSync(new URL('./account-backup-ui.js', import.meta.url), 'utf8');
 const accountPickerScript = readFileSync(new URL('./account-picker-ui.js', import.meta.url), 'utf8');
@@ -118,7 +119,7 @@ function createConsoleVersionGuard() {
   const version = document.querySelector('meta[name="cw-console-version"]')?.content || '';
   const message = '控制台已更新或重启，当前页面已过期。未保存的草稿已保留；请先下载或复制未保存的修改，再刷新页面。';
   const stops = new Set(['/api/loop/stop','/api/disconnect','/api/stages/stop','/api/pirates/advance/stop',
-    '/api/guild/mutual/stop','/api/trials/stop','/api/capture/stop','/api/accounts/alipay-login/cancel','/api/accounts/phone-login/cancel']);
+    '/api/guild/mutual/stop','/api/trials/stop','/api/capture/stop','/api/accounts/alipay-login/cancel','/api/accounts/wechat-login/cancel','/api/accounts/phone-login/cancel']);
   let stale = false;
   const failure = () => Object.assign(new Error(message), { code: 'CLIENT_VERSION_MISMATCH', fields: { revision: message } });
   const allowed = (path, method = 'POST') => ['GET','HEAD','OPTIONS'].includes(String(method).toUpperCase())
@@ -126,32 +127,55 @@ function createConsoleVersionGuard() {
   const reject = () => {
     if (stale) return;
     stale = true;
-    const banner = document.createElement('section'); banner.id = 'console-version-warning'; banner.className = 'config-message';
-    banner.dataset.kind = 'error'; banner.setAttribute('role', 'alert');
-    const text = document.createElement('p'); text.textContent = message; banner.append(text);
-    const actions = document.createElement('div'); Object.assign(actions.style, { display: 'flex', flexWrap: 'wrap', gap: '8px', marginTop: '8px' });
-    const action = (label, run) => { const button = document.createElement('button'); button.type = 'button'; button.className = 'config-small-button'; button.textContent = label; button.onclick = run; actions.append(button); return button; };
-    const download = action('下载游戏配置草稿', () => configDownloadDraft()); download.disabled = !configHasDraft();
-    action('刷新页面', () => {
-      if (!window.confirm('刷新会丢弃本页未保存的修改。请先下载游戏配置草稿或复制需要保留的内容，确认已保留后再刷新。')) return;
-      location.reload();
-    });
-    for (const [label, route] of [['停止当前账号挂机', '/api/loop/stop'], ['断开当前账号', '/api/disconnect']]) {
-      const button = action(label, async () => {
-        if (!current) return; button.disabled = true;
-        try { await call(route, { method: 'POST', body: JSON.stringify({ confirm: true }) }); await refreshLoop(); }
-        catch (error) { reportError(error); }
-        finally { button.disabled = !current; }
-      }); button.disabled = !current;
-    }
-    banner.append(actions); (document.querySelector('header') || document.body).prepend(banner);
     window.dispatchEvent(new Event('cw-console-version-stale'));
+    showStalePageDialog();
   };
   const observe = value => { if (value && value !== version) reject(); };
   return Object.freeze({ version, message, isStale: () => stale, observe, reject,
     check(response, data) { observe(response?.headers?.get('X-CW-Console-Version')); if (data?.code === 'CLIENT_VERSION_MISMATCH') reject(); return !stale; },
     assertWritable(path, method = 'POST') { if (stale && !allowed(path, method)) throw failure(); },
   });
+}
+
+function showStalePageDialog() {
+  const dialog = $('console-version-warning'), opener = $('console-version-open');
+  const download = $('console-version-download'), accountActions = $('console-version-account');
+  const result = $('console-version-result');
+  function open() {
+    download.hidden = !configHasDraft();
+    accountActions.hidden = !current;
+    accountActions.open = false;
+    result.textContent = '';
+    dialog.showModal();
+  }
+  opener.hidden = false;
+  opener.onclick = open;
+  $('console-version-dismiss').onclick = () => dialog.close();
+  download.onclick = () => configDownloadDraft();
+  $('console-version-reload').onclick = () => {
+    if (window.confirm('刷新会丢弃本页未保存的修改。请确认已保留需要的内容，再刷新页面。')) location.reload();
+  };
+  for (const [id, route, success] of [
+    ['console-version-stop', '/api/loop/stop', '当前账号已停止挂机。'],
+    ['console-version-disconnect', '/api/disconnect', '当前账号已断开。'],
+  ]) {
+    const button = $(id);
+    button.onclick = async () => {
+      const account = current;
+      if (!account || button.disabled) return;
+      button.disabled = true;
+      result.textContent = '';
+      try {
+        await call(route, { method: 'POST', body: JSON.stringify({ confirm: true }) });
+        if (account === current) result.textContent = success;
+        await refreshLoop();
+      } catch (error) {
+        if (account === current) result.textContent = error.message;
+        reportError(error);
+      } finally { button.disabled = false; }
+    };
+  }
+  open();
 }
 window.cwConsoleVersion = createConsoleVersionGuard();
 
@@ -213,6 +237,7 @@ async function call(path, options) {
     }
     return data;
   } catch (error) {
+    if (method === 'GET' && opts.signal?.aborted) throw error;
     if (!error.logged) reportError(error, path, account);
     error.logged = true;
     throw error;
@@ -2199,6 +2224,7 @@ ${phoneLoginScript}
 
 // ---- 支付宝扫码登录 --------------------------------------------------------
 ${alipayLoginScript}
+${wechatLoginScript}
 
 // ---- 添加账号引导 ----------------------------------------------------------
 ${accountAddScript}

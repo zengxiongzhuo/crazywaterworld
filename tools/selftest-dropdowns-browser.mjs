@@ -13,6 +13,7 @@ fs.writeFileSync(process.env.CW_CONFIG_PACK, JSON.stringify([[0, 'BuildingCfg', 
   data: Array.from({ length: 30 }, (_, i) => ({ buildingType: String(i + 1), name: '验收建筑' + (i + 1) })),
 }]]));
 const { saveStore } = await import('../src/accounts.mjs');
+const { defaultSettings, saveAutomationSettings, loadAutomationSettings } = await import('../src/automation-settings.mjs');
 const { GameClient } = await import('../src/client.mjs');
 const { createConsole } = await import('../src/server.mjs');
 let connections = 0;
@@ -21,6 +22,7 @@ saveStore({ version: 1, activeId: 'dropdown-test', accounts: [{
   id: 'dropdown-test', label: '下拉框验收账号', url: 'wss://fixture.invalid', login: {},
   automation: { enabled: false, autoStart: false, paused: true },
 }] });
+saveAutomationSettings('dropdown-test', defaultSettings(), { revision: 0 });
 const app = createConsole({ port: 0, protocol: {} });
 const output = path.resolve('output/dropdowns');
 fs.mkdirSync(output, { recursive: true });
@@ -97,6 +99,60 @@ try {
     await page.keyboard.press('Escape');
   }
   console.log('通过：360px 窄屏和矮窗口完整显示，列表底部选项可滚动点击');
+
+  const types = page.locator('#config-field-treasure-qualities');
+  const selectAll = types.getByRole('button', { name: '全选常规参与货轮类型' });
+  const clearTypes = types.getByRole('button', { name: '清空选择', exact: true });
+  const openTypes = async () => {
+    await page.evaluate(() => {
+      configActivate('world'); configActivateGroup('treasure');
+      configCollapsed.clear(); configUpdateVisibility();
+    });
+    await types.locator('summary').click();
+    await clearTypes.waitFor();
+  };
+  const savedTypes = async expected => {
+    await page.locator('#config-state').filter({ hasText: '配置已同步' }).waitFor();
+    assert.deepEqual(loadAutomationSettings('dropdown-test').settings.treasure.qualities, expected);
+  };
+  for (const viewport of [{ width: 1440, height: 1200 }, { width: 360, height: 800 }]) {
+    await page.setViewportSize(viewport);
+    await openTypes();
+    assert.equal(await types.locator('input:checked').count(), 3);
+    assert.equal(await selectAll.isDisabled(), true, '全部勾选时禁用全选按钮');
+    assert.equal(await clearTypes.isEnabled(), true);
+    const menu = await types.locator('.config-multi-panel').boundingBox();
+    const first = await selectAll.boundingBox(), second = await clearTypes.boundingBox();
+    for (const box of [first, second]) {
+      assert(box.x >= menu.x && box.x + box.width <= menu.x + menu.width + 1);
+      assert(box.y >= menu.y && box.y + box.height <= menu.y + menu.height + 1);
+    }
+    const gap = second.x - (first.x + first.width);
+    assert(gap >= 0 && gap <= 16 && Math.abs(first.y - second.y) <= 1, '底部操作按钮应并排相邻');
+    if (viewport.width === 1440) await types.locator('.config-multi-panel').screenshot({
+      path: path.join(output, 'treasure-types-footer.png'), animations: 'disabled',
+    });
+    await clearTypes.click();
+    assert.equal(await types.locator('input:checked').count(), 0);
+    assert.equal(await clearTypes.isDisabled(), true, '空选时禁用清空按钮');
+    assert.equal(await selectAll.isEnabled(), true);
+    await savedTypes([]);
+    await page.reload();
+    await page.locator('#tabs [data-tab=settings]').click();
+    await types.waitFor({ state: 'attached' });
+    await openTypes();
+    assert.equal(await clearTypes.isDisabled(), true);
+    await types.getByRole('checkbox', { name: '中型货轮' }).check();
+    assert.equal(await selectAll.isEnabled(), true);
+    assert.equal(await clearTypes.isEnabled(), true);
+    await selectAll.press('Enter');
+    assert.equal(await types.locator('input:checked').count(), 3);
+    assert.equal(await selectAll.isDisabled(), true);
+    await savedTypes(['ORANGE', 'PURPLE', 'BLUE']);
+    await page.keyboard.press('Escape');
+    assert.equal(await types.getAttribute('open'), null);
+  }
+  console.log('通过：货轮类型底部按钮在宽屏与窄屏相邻，随勾选更新，鼠标清空与键盘全选均保存');
 
   await page.setViewportSize({ width: 1440, height: 1200 });
   // 实际配置分组逐一检查；展开参数折叠区，但不改变业务开关。

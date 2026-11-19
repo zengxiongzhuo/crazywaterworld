@@ -26,6 +26,7 @@ import { captureFarmMaterialState, farmInventory, settleFarmMaterialState } from
 import { runFactoryProductionBatch, confirmFactoryProductionBeforeHarvest } from './factory-production.mjs';
 import { activityProductionEnabled } from './activity-automation.mjs';
 import { createProductionEligibility } from './production-eligibility.mjs';
+import { commitFactoryLane, createProductionTiming, nextFactoryLane, observedProductionDurations, secondProductionLane } from './production-timing.mjs';
 
 // 与客户端FactoryUtil一致：活动工坊只使用服务器limitTimeItem开放窗口。
 export function factoryRecipeAvailability(recipe, festivals, now) {
@@ -167,7 +168,8 @@ function rememberResidentOrders(session, orders) {
 }
 
 // 只读探测：一次拉齐海面状态、库存、资源田、舰队。
-export async function surveyWorld(client, protocol, { config = null, player = null, includeWeekOrder = true, includeCargo = false, ordersOnly = false, timeout = 8000 } = {}) {
+export async function surveyWorld(client, protocol, { config = null, player = null, includeWeekOrder = true, includeCargo = false,
+  ordersOnly = false, includeProductionTiming = true, timeout = 8000 } = {}) {
   const get = async (name) => {
     const responseName = `${name.slice(0, -7)}Response`;
     if (!protocol[name] || !protocol[responseName]) return null;
@@ -345,13 +347,22 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     }
   }
   const factories = buildings.filter((b) => b.factory);
+  const slots = paramOf(config, SLOTS_PARAM);
+  const secondLaneConfigured = rowsOf(config, 'MonthCardCfg').some(row =>
+    Array.isArray(row.effectList) && row.effectList.some(effect => effect?.[0] === '第二生产位' && effect[1] > 0));
+  const readTiming = includeProductionTiming && !ordersOnly && secondLaneConfigured && factories.some(b =>
+    b.level > 0 && Array.isArray(b.factory.factoryQ) && slots - b.factory.factoryQ.length >= 2
+    && rowsOf(config, 'BuildingProduceCfg').some(recipe => recipe.buildType === b.type));
+  const monthCards = readTiming ? await get('MonthCardRequest') : null;
+  const serverClock = () => Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000);
+  const effects = secondProductionLane(config, monthCards, serverClock()).until > 0 ? await get('GameEffectRequest') : null;
   const resFieldInfo = resFields?.info ?? null;
   const vip = rowsOf(config, 'VipLevelCfg').find(row => row.level === player?.vip?.vipLevel);
   const stockBonus = Number(vip?.effects?.find(([effect]) => effect === '加工品存量上限')?.[1] ?? 0);
 
   return {
     now: Math.floor(Date.now() / 1000),
-    serverNow: Math.floor((Date.now() + (client.serverClockOffsetMs || 0)) / 1000),
+    serverNow: serverClock(),
     player,
     stock,
     have,
@@ -377,12 +388,67 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     salvageLevel: water.salvageLevel ?? null,
     divingLevel: water.divingLevel ?? null,
     stockCap: paramOf(config, STOCK_PARAM) + stockBonus,
-    factorySlots: paramOf(config, SLOTS_PARAM),
+    factorySlots: slots,
+    productionTiming: { monthCards, effects, observedDurations: observedProductionDurations(client) },
     resFields: resFieldInfo ? normalize(resFieldInfo) : null,
     fleets: fleets ? normalize(fleets.fleets ?? []) : null,
     worldOpenLevel: rowsOf(config, 'ModuleOpenCfg').find(r => r.moduleId === '世界')?.playerLevel,
     notes,
   };
+}
+
+// Equal durations have the same lane occupancy. Keep their original order.
+function* factoryJobOrders(batch) {
+  if (batch.length <= 1) { yield batch; return; }
+  const seen = new Set();
+  for (const job of batch) {
+    if (seen.has(job.seconds)) continue;
+    seen.add(job.seconds);
+    for (const rest of factoryJobOrders(batch.filter(other => other !== job))) yield [job, ...rest];
+  }
+}
+
+// Keep all material reservations and the selected quantities. Within one
+// demand priority, a long job may finish sooner if it starts beside a short one.
+function orderFactoryJobs(jobs, building, timing) {
+  const original = jobs.map(job => job.step);
+  if (jobs.length < 2 || !jobs.some(job => job.step.demandDriven) || jobs.some(job => job.step.needsConfirmedBorrow)) return original;
+  const { lanes, finishes: initial, missing } = timing.factoryQueue(building);
+  if (lanes.count < 2 || missing.length) return original;
+  const timed = jobs.map(job => ({ ...job, seconds: timing.factory(job.recipe, { building }).seconds }));
+  if (timed.some(job => !job.seconds)) return original;
+
+  let finishes = initial;
+  const ordered = [];
+  function simulate(batch) {
+    const available = [...finishes];
+    let done = 0;
+    for (const job of batch) {
+      const lane = nextFactoryLane(available, lanes.expiresAt, job.seconds);
+      commitFactoryLane(available, lane);
+      done = Math.max(done, lane.finish);
+    }
+    return { batch, available, done };
+  }
+  for (let start = 0; start < timed.length;) {
+    let end = start + 1;
+    while (end < timed.length && timed[end].priority === timed[start].priority) end++;
+    const batch = timed.slice(start, end);
+    let best = simulate(batch);
+    if (batch.length > 1 && batch.every(job => job.step.demandDriven)) {
+      // The game's six slots bound this search to 720 orders. Keep a bounded
+      // fallback if a future config raises the queue limit.
+      const candidates = batch.length <= 6 ? factoryJobOrders(batch) : [[...batch].sort((a, b) => b.seconds - a.seconds)];
+      for (const candidate of candidates) {
+        const result = simulate(candidate);
+        if (result.done < best.done) best = result;
+      }
+    }
+    ordered.push(...best.batch.map(job => job.step));
+    finishes = best.available;
+    start = end;
+  }
+  return ordered;
 }
 
 // 计划：收成品 → 竣工 → 建造 → 交单 → 排产 → 余料升级 → 加速。每步都只排「客户端确实会发的请求」。
@@ -836,10 +902,12 @@ export function planWorld(survey, {
     for (const item of factory.finishedProducts ?? []) addIncoming(item.id, Number(item.num));
   }
   const factoryReasons = new Map();
+  const timing = createProductionTiming({ config, ...survey.productionTiming, serverNow: survey.serverNow ?? now });
   const constructionGap = id => buildMaterials.has(id)
     ? Math.max(0, buildMaterials.get(id).num - free(id) - (incoming.get(id) ?? 0)) : 0;
   for (const b of survey.factories) {
     if (!enabled('startProduce')) break;
+    if (!(b.level > 0)) continue;
     if (blockedFactory(b)) { factoryReasons.set(b.buildingId, '已在设置中禁用此工厂'); continue; }
     if (b.factory.autoProductId && (survey.autoProduceForever || survey.autoProduceEndTime > (survey.serverNow ?? now))) {
       const desired = settings?.factory.cooperateNative ? produceRows.filter(row =>
@@ -863,6 +931,7 @@ export function planWorld(survey, {
     if (settings && !settings.factory.produce) {factoryReasons.set(b.buildingId,'普通排产关闭；原生协同只调整已开启的自动目标');continue;}
     const queue = b.factory.factoryQ ?? [];
     if (queue.length >= survey.factorySlots) continue;
+    const jobs = [];
     for (let slot = queue.length; slot < survey.factorySlots; slot++) {
       const reasons = [];
       const cand = produceRows.filter(row => {
@@ -901,6 +970,7 @@ export function planWorld(survey, {
       const cargoNeed = cargoGap.get(best.itemId) ?? 0;
       const buildNeed = constructionGap(best.itemId);
       const forDemand = !settings || productionNeeded(best.itemId);
+      const priority = settings ? customRank(best) : [weeklyNeed, cargoNeed, need, buildNeed].findIndex(gap => gap > 0);
       const demandSources = forDemand ? Object.entries(detailedNeeds?.get(best.itemId)?.productionBySource ?? {})
         .filter(([, quantity]) => quantity > 0).map(([source]) => source) : [];
       const projected = projectedStock(best.itemId);
@@ -929,7 +999,7 @@ export function planWorld(survey, {
       const displayProduct = name(best.itemId);
       const reason = forDemand && weeklyNeed ? `商人订单缺 ${weeklyNeed} 件` + (needsConfirmedBorrow ? '，居民交单后补回' : '') : forDemand && cargoNeed ? `贸易港缺 ${cargoNeed} 件`
         : forDemand && need ? `居民订单缺 ${need} 件` : forDemand && buildNeed ? `${buildMaterials.get(best.itemId).name}建造缺 ${buildNeed} 件` : `补库存，排入后预计共 ${projected + 1} 件（含待收和在产）`;
-      actions.push({
+      const step = {
         kind: 'startProduce',
         request: 'StartFactoryProduceRequest',
         response: null,
@@ -941,8 +1011,10 @@ export function planWorld(survey, {
         ...(demandSources.length ? { demandSources } : {}),
         displayFactory, displayProduct,
         label: `${displayFactory}安排生产${displayProduct} 1 件，耗时 ${durationText(best.produceTime)}。${reason}`,
-      });
+      };
+      jobs.push({ step, recipe: best, priority });
     }
+    actions.push(...orderFactoryJobs(jobs, b, timing));
   }
 
   // 6. 余料升级建筑：把订单与排产占用的材料扣掉之后再比升级消耗，按人口需求升序（便宜的先生效）。
@@ -1565,6 +1637,7 @@ function parseMap(raw, file, scenarioId) {
     tileWidth: mapInfo?.tileWidth ?? 0,
     tileHeight: mapInfo?.tileHeight ?? 0,
     cityInfo,
+    pollutionData: data.pollutionData,
     cityAt(gridIdx) { return mapData[gridIdx] === undefined ? 0 : mapData[gridIdx] % 1000; },
     fieldCount: mapData.reduce((n, v) => n + (Math.floor(v / 10000) % 10 ? 1 : 0), 0),
     fieldAt(gridIdx) {

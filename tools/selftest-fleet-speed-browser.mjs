@@ -321,7 +321,7 @@ try{
     // 用键盘在控件仍持有焦点时清空，验证隐藏之后焦点回到可见入口。
     const clear=picker.getByRole('button',{name:'清空选择',exact:true});await clear.focus();
     await page.keyboard.press('Enter');
-    assert.equal(await picker.isVisible(),false);assert.equal(await error.isVisible(),false);
+    await picker.waitFor({state:'hidden'});assert.equal(await error.isVisible(),false);
     const focusTarget=unavailable?roles:disclosure;
     assert.equal(await focusTarget.evaluate(node=>node===document.activeElement),true);
     assert.equal(await fleet.isVisible(),!unavailable);

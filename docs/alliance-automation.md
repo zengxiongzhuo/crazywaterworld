@@ -1,6 +1,12 @@
 # 联盟自动化：功能与协议依据
 
-核对日期：2026-11-18。本机微信缓存协议包、主包及资源配置用于离线核验；原接入依据为缓存版本 76。解包文件只保留在被忽略的 `work/` 下，不随仓库分发。
+核对日期：2026-11-19。本机微信缓存协议包、主包及资源配置用于离线核验；原接入依据为缓存版本 76。解包文件只保留在被忽略的 `work/` 下，不随仓库分发。
+
+## 控制台入口
+
+打开 **挂机配置 → 世界 → 联盟 · 募兵与互助**，同时开启 **联盟自动化总开关** 和 **自动在联盟城市募兵**，开始挂机后执行。这里对应游戏中向本联盟城市提交材料的「募兵」，运行提示统一称为「联盟募兵」。每日募兵上限为 0 时不额外限制，仍受游戏次数上限约束；需要自动补产时另开 **募兵缺料自动备料**，并开启工厂生产。
+
+旧 `schedule.guildOrders` 独立任务已永久停用，旧值在加载和导入时归零；关闭联盟总开关或募兵细项后不会恢复旧任务。当前入口由 `alliance.enabled` 和 `alliance.recruit` 控制，继续复用 `guild-orders.mjs` 的配置读取、材料检查与提交逻辑，协议名称和内部键保留兼容。
 
 ## 已有与补齐的功能
 
@@ -20,8 +26,9 @@
 
 ## 实际协议与客户端规则
 
-- `GuildCityArmyPop._onBtnFinishGuildOrder` 发送 `FinishGuildOrderRequest({cityId})`，回执为 `FinishGuildOrderResponse.reward`。截图的「募兵」与项目的「联盟订单」是同一个协议动作，不是英雄招募接口。
-- `GuildOrderNumCfg` 按当前赛季及不高于玩家等级的最高档决定上限；`maxNum=-1` 表示游戏未限制，0 表示当前档不可提交。每日已完成次数来自完整 `CounterInfoResponse.counters` 中的 `DAILY_FINISH_GUILD_ORDER`。
+- `GuildCityArmyPop._onBtnFinishGuildOrder` 发送 `FinishGuildOrderRequest({cityId})`，回执为 `FinishGuildOrderResponse.reward`。游戏的「募兵」与项目旧称「联盟订单」是同一个协议动作，不是英雄招募接口。
+- `GuildOrderNumCfg` 先选不高于当前赛季的最高赛季，再按 `PlayerUtil.levelCfg` 选不高于玩家等级的最高档；`maxNum=-1` 表示游戏未限制，0 表示当前档不可提交。当前赛季没有专属行时，按客户端 `SeasonUtil.seasonCfgList` 回退，绝不借用未来赛季额度。配置表为空、赛季字段异常，或所选赛季的等级／额度字段异常、同等级重复时停止募兵并报错，不跳过异常行后降档。每日已完成次数来自完整 `CounterInfoResponse.counters` 中的 `DAILY_FINISH_GUILD_ORDER`。
+- 微信包 76 对应的 `config_cn=f6b95` 中，`GuildOrderNumCfg` 仅含赛季 1–7 的 22 行；赛季 8 及以后沿用赛季 7：1–34 级每天 10 次、35–49 级 30 次、50–64 级 50 次、65 级起不限。后续以实际下发配置为准；仅同步相同版本的资源不会补出新赛季行。
 - `GuildOrderRequest` 返回 `order.requirements` 与 `nextRefreshTime`。`GuildCityInfoRequest` 返回本联盟城市与推荐标记，使用已确认的推荐城市，无推荐时选择已确认的本盟城市。
 - `GuildUtil.isGuildHelpItem` 只允许 `GuildHelpCfg` 中、`season <= 当前赛季` 的材料；`getMaxAidNum()` 读取 `GuildParamCfg` 的「每日求助次数上限」（当前配置为 20）。
 - 普通联盟援助为 `AidType.AID_GUILD = 0`。发布 `GuildAidAskRequest({reqItemId,type:0})`，每条求助需求一件材料；该协议没有数量或批量字段，达到设定次数需连续发送多个请求。客户端普通求助入口仅检查每日次数，未发现必须先收到回赠或限制未完成求助条数的规则。
@@ -36,7 +43,7 @@
 - 普通联盟互助统一由 `alliance.enabled` 和 `alliance.mutual` 控制；关闭任一总开关，自动收取、赠送与求助全部停止。`alliance.autoHelp` 单独控制赠送，关闭后仍可按其他开关收取或求助。
 - 升级时，旧版配置缺少 `alliance.askDailyLimit` 会在读取或导入时补为 20，原有开关、材料筛选、库存保留和赠送上限保持原值；读取不会直接改写配置文件，保存时才写入新增字段。原本关闭的功能不会因升级而开启。
 - 原本已开启自动求助或赠送的账号，在升级后下一次执行时采用新的连续处理节奏：求助补足当日目标，赠送处理至原设定上限或无合格请求。已有当日用量和未确认记录继续生效；希望减少求助时可调低新增次数，设为 0 可停止发起。
-- 旧 `guildAidCollect` / `guildAidHelp` 任务已永久停用，加载和导入旧配置时归零，执行层也拒绝残留旧值。升级不会自动开启新版联盟总开关或互助细项；以前仅使用旧互助开关的账号需在“联盟 · 募兵与互助”中重新开启。联盟总开关接管时，旧联盟订单和福利任务仍按原逻辑避让。
+- 旧 `guildOrders` / `guildAidCollect` / `guildAidHelp` 任务已永久停用，加载和导入旧配置时归零，执行层也拒绝残留旧值。升级不会自动开启新版联盟总开关、募兵或互助细项；以前仅使用旧入口的账号需在“联盟 · 募兵与互助”中重新开启。联盟总开关接管时，原独立福利任务继续避让，募兵与互助不再恢复旧执行路径。
 - 帮助次数使用已有 `guildAidGifts` 持久计数，工具内手动与自动共用 `alliance.helpDailyLimit`；该值是工具每日赠送上限，默认 20，0 表示不赠送。
 - 求助的有效每日目标为 `min(alliance.askDailyLimit, 游戏每日上限)`；`alliance.askDailyLimit` 默认 20，0 表示不发起求助。服务器 `DAILY_GUILD_AID` 计数包含游戏内手动求助，不为不同模式另开额度。例如设为 20，游戏今日已求助 5 次，则本轮连续补发 15 次。每条都须确认计数增长与新求助记录，再发送下一条。
 - 游戏规则允许当天手动取消求助返还次数，跨天取消和超时自动取消不返还。工具仍保守受持久账本已占额度及唯一请求记录约束，不会因服务器计数回退而重复使用已提交的计数槽位；修改设置或重启也不会重置当日占用。

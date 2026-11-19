@@ -261,7 +261,7 @@ try {
     for (const color of [3, 4, 5]) {
       for (const durability of [1500, 2000]) {
         const { f, s } = fixture(), usage = ledger();
-        Object.assign(s.treasure, { followMode: 'eachTime', onlyTenThousand: false, participationMode: 'always', autoJoin: true });
+        Object.assign(s.treasure, { followMode: 'eachTime', qualities: ['ORANGE', 'PURPLE', 'BLUE'], participationMode: 'always', autoJoin: true });
         f.state.targets[0].color = color;
         await first(f, s, usage); leave(f); f.returnFromTreasure('1远征船', durability);
         f.state.stats.todayRewardTimes = 3;

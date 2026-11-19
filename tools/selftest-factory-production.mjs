@@ -86,6 +86,36 @@ await test('秒产直接进入待收成品仍可确认整批，批内不无限�
   assert.equal(f.state.building.factory.finishedProducts[0].num, 6);
   assert.equal(pendingOrderMaterialSpends(f.player).length, 0);
 });
+await test('升级中的已建工厂可生产当前等级配方，升级在批内竣工也可确认', async () => {
+  const f = fixture();
+  Object.assign(f.state.building, { level: 1, buildStartTime: now() - 30, buildFinishTime: now() + 10 });
+  f.config.tables.BuildingProduceCfg.data[1].unlockLevel = 2;
+  assert.equal((await f.batch([f.step('产品乙')])).results[0].skipped, true);
+  assert.equal(f.state.writes.length, 0);
+  f.state.afterSend = () => Object.assign(f.state.building, { level: 2, buildStartTime: 0, buildFinishTime: 0 });
+  const result = await f.batch([f.step()]);
+  assert.equal(f.state.writes.length, 1);
+  assert.equal(result.results[0].status, 'confirmed');
+  assert.equal(pendingOrderMaterialSpends(f.player).length, 0);
+});
+await test('首建中的工厂即使带有空生产队列也不能下单', async () => {
+  const f = fixture();
+  Object.assign(f.state.building, { level: 0, buildStartTime: now() - 30, buildFinishTime: now() + 60 });
+  assert.equal((await f.batch([f.step()])).results[0].skipped, true);
+  assert.equal(f.state.writes.length, 0);
+});
+await test('单凭升级竣工不能确认未知的排产', async () => {
+  const f = fixture();
+  Object.assign(f.state.building, { level: 1, buildStartTime: now() - 30, buildFinishTime: now() + 10 });
+  f.state.mode = 'unknown';
+  f.state.failAt = 1;
+  const first = await f.batch([f.step()]);
+  assert.equal(first.results[0].status, 'unknown');
+  Object.assign(f.state.building, { level: 2, buildStartTime: 0, buildFinishTime: 0 });
+  const retry = await f.batch([f.step()]);
+  assert(retry.results[0].skipped);
+  assert.equal(f.state.writes.length, 1);
+});
 await test('runWorld仅剩一个空槽的秒产也确认成品，不残留材料锁', async () => {
   const f = fixture(); for (let i=0;i<5;i++) f.add('产品乙'); f.state.instant = true;
   const result = await runWorld(f.client, protocol, { actions: [f.step()] }, { ...f.options(), allowMutate: true });

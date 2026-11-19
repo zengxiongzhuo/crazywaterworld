@@ -10,6 +10,7 @@ import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { readOrderReservedStock } from './order-reservations.mjs';
 import { petSpendSnapshot, confirmPetSpend } from './spend-evidence.mjs';
+import { goldAccountKey } from './gold-reservations.mjs';
 import { readAllianceRecruitDemand } from './alliance-automation.mjs';
 import { readGuildShips, guildShipDemands } from './guild-ships.mjs';
 import { watchHeroRaidPushes, heroRaidDemands } from './hero-raid-automation.mjs';
@@ -223,27 +224,58 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
         costs: [{ id: '保险箱钥匙', num: 1 }], label: '潜水后使用 1 把保险箱钥匙开箱' });
     }
   }
-  if (settings.loop.dailies && settings.gold.enabled) {
-    const info = snapshot.gold?.info;
-    const price = rows(config, 'OfflineParamCfg').find(r => r.paramName === '点金价格')?.paramValue;
-    if (!info || !Number.isSafeInteger(price) || price < 1) note('gold.enabled', '付费点金：未能确认当天次数和单价');
-    else {
-      const recorded = Math.max(info.paidTimes ?? 0, usage.counters?.goldPaidTimes ?? 0);
-      const remaining = Math.max(0, Math.min(settings.gold.times, info.maxPaidTimes ?? 0) - recorded);
-      const budget = settings.resources.allowDiamonds ? Math.max(0, settings.resources.diamondDailyLimit - (usage.counters?.diamonds ?? 0)) : 0;
-      const count = Math.min(remaining, Math.floor(Math.max(0, free('RUBY')) / price), Math.floor(budget / price));
-      if (count > 0) add({ kind: 'paidGold', setting: 'gold.enabled', scope: 'daily', request: 'ClickGoldRequest', response: 'ClickGoldResponse', body: { times: count, free: false },
-        costs: [{ id: 'RUBY', num: count * price }], counters: { goldPaidTimes: count }, counterMinimums: { goldPaidTimes: info.paidTimes ?? 0 },
-        verify: { paidBefore: info.paidTimes ?? 0 }, label: `付费点金 ${count} 次（今日目标 ${settings.gold.times}，已完成 ${info.paidTimes ?? 0}）` });
-      else if (remaining > 0) note('gold.enabled', '付费点金：钻石开关、保留余额或每日额度限制了本次操作');
-      else if (recorded > (info.paidTimes ?? 0)) note('gold.enabled', `付费点金：游戏已完成 ${info.paidTimes ?? 0} 次，已计入或预留 ${recorded} 次，等待未确认结果，不再追加`);
-    }
-  }
+  if (settings.loop.dailies && settings.gold.enabled) planPaidGold();
   const checked = budgetPreview(actions, world.stock, settings, usage);
   for (const [setting, values] of Object.entries(checked.notesBySetting)) {
     (notesBySetting[setting] ??= []).push(...values);
   }
-  return { actions: checked.actions, notes: [...notes, ...checked.notes], notesBySetting, demands: baseDemands(snapshot, config, settings) };
+  return { actions: checked.actions, notes: [...notes, ...checked.notes], notesBySetting, demands: baseDemands(snapshot, config, settings),
+    goldInfo: settings.loop.dailies && settings.gold.enabled ? snapshot.gold?.info : null, pendingPaidGold: usage.pendingPaidGold === true };
+
+  function planPaidGold() {
+    const target = settings.gold.times;
+    if (target === 0) {
+      note('gold.enabled', '付费点金：每日目标为 0 次');
+      return;
+    }
+    const { paidTimes: paidBefore = 0, freeTimes: freeBefore = 0, maxPaidTimes, resetTime } = snapshot.gold?.info ?? {};
+    const params = rows(config, 'OfflineParamCfg');
+    const price = params.find(row => row.paramName === '点金价格')?.paramValue;
+    const freeLimit = params.find(row => row.paramName === '免费点金次数')?.paramValue;
+    if (!Number.isSafeInteger(price) || price < 1 ||
+        ![freeLimit, freeBefore, paidBefore, maxPaidTimes].every(n => Number.isSafeInteger(n) && n >= 0) ||
+        paidBefore > maxPaidTimes || (resetTime != null && (!Number.isSafeInteger(resetTime) || resetTime < 0))) {
+      note('gold.enabled', '付费点金：未能确认当天次数和单价');
+      return;
+    }
+    const recorded = Math.max(paidBefore, usage.counters?.goldPaidTimes ?? 0);
+    if (usage.pendingPaidGold || recorded > paidBefore) {
+      note('gold.enabled', `付费点金：游戏已完成 ${paidBefore} 次，已计入或预留 ${recorded} 次，等待未确认结果，不再追加`);
+      return;
+    }
+    const remaining = Math.min(target, maxPaidTimes) - paidBefore;
+    if (remaining <= 0) {
+      note('gold.enabled', `付费点金：今日已付费 ${paidBefore} 次，${paidBefore >= target ? '已达到设置目标' : '已达到游戏当日上限'}`);
+      return;
+    }
+    if (freeBefore < freeLimit) {
+      note('gold.enabled', `付费点金：今日还剩 ${freeLimit - freeBefore} 次免费点金，等免费次数用完后再付费`);
+      return;
+    }
+    const budget = settings.resources.allowDiamonds ? settings.resources.diamondDailyLimit - (usage.counters?.diamonds ?? 0) : 0;
+    const affordable = Math.min(remaining, Math.floor(free('RUBY') / price), Math.floor(budget / price));
+    if (!Number.isSafeInteger(affordable) || affordable < 1) {
+      note('gold.enabled', '付费点金：钻石开关、保留余额或每日额度限制了本次操作');
+      return;
+    }
+    // 客户端只提供单点和按游戏剩余次数计算的连点按钮。
+    const batch = Math.min(10, maxPaidTimes - paidBefore);
+    const count = affordable >= batch ? batch : 1;
+    add({ kind: 'paidGold', setting: 'gold.enabled', scope: 'daily', request: 'ClickGoldRequest', response: 'ClickGoldResponse', body: { times: count, free: false },
+      costs: [{ id: 'RUBY', num: count * price }], counters: { goldPaidTimes: count }, counterMinimums: { goldPaidTimes: paidBefore },
+      verify: { paidBefore, freeBefore, freeLimit, maxPaidTimes, ...(resetTime != null ? { resetTime } : {}) },
+      label: `付费点金 ${count} 次（今日目标 ${target}，已完成 ${paidBefore}）` });
+  }
 
   function planMuseum() {
     const pref = settings.museum, data = snapshot.museum;
@@ -411,15 +443,49 @@ export function observeBaseAutomationPlan(rewards, plan, settings, everyMs) {
       ])];
       const text = actions.length ? `本次计划 ${actions.length} 项`
         : '已核对，当前无符合条件的动作' + (notes.length ? '：' + notes.join('；') : '');
-      rewards.observe(key, text);
+      if (key === 'gold.enabled' && plan.pendingPaidGold) rewards.observe(key, text, 'pending');
+      else rewards.observe(key, text);
       rewards.expect(key, rewards.now() + Math.ceil(everyMs / 1000));
     }
   }
 }
 
+async function checkPaidGoldBeforeSend(client, protocol, step, settings) {
+  if (!settings.loop.dailies || !settings.gold.enabled) throw new AutomationSkip('付费点金已关闭');
+  if (!protocol.ClickGoldResponse || !protocol.ClickGoldInfoRequest || !protocol.ClickGoldInfoResponse) {
+    throw new AutomationSkip('当前协议无法核实点金回执和次数');
+  }
+  const { info } = normalize(await client.request('ClickGoldInfoRequest', {}, 'ClickGoldInfoResponse', 8000));
+  const { freeLimit, paidBefore, maxPaidTimes, resetTime } = step.verify;
+  const paid = info?.paidTimes ?? 0, free = info?.freeTimes ?? 0;
+  if (!info || !Number.isSafeInteger(free) || free < freeLimit || paid !== paidBefore || info.maxPaidTimes !== maxPaidTimes ||
+      info.resetTime !== resetTime || paid + step.body.times > settings.gold.times) {
+    throw new AutomationSkip('点金次数、当日上限或重置时间已变化，等待重新规划');
+  }
+}
+
+async function checkPaidGoldReceipt(client, step, body, ledger, ticket) {
+  if (!Array.isArray(body?.result) || body.result.length !== step.body.times ||
+      !body.result.every(row => Number.isSafeInteger(row?.gold) && row.gold > 0)) {
+    return '点金奖励明细不完整，已保留本次次数与钻石额度';
+  }
+  ledger.markPaidGoldReward(ticket);
+  const { info } = normalize(await client.request('ClickGoldInfoRequest', {}, 'ClickGoldInfoResponse', 8000));
+  if (info?.resetTime !== step.verify.resetTime || !Number.isSafeInteger(info?.paidTimes) ||
+      info.paidTimes < step.verify.paidBefore + step.body.times) {
+    return '已收到点金奖励，付费次数尚待确认，下一轮继续核对';
+  }
+  return null;
+}
+
 export async function runBaseAutomation(client, protocol, config, plan, { player = null, getSettings, ledger, enabled = () => true, onStep } = {}) {
   const guard = createActionGuard(client, getSettings, ledger, { enabled, player });
   const results = [];
+  if (plan.pendingPaidGold && plan.goldInfo && enabled() && ledger.reconcilePaidGold(plan.goldInfo, player ? goldAccountKey(player) : null)) {
+    const row = { step: { kind: 'paidGold', setting: 'gold.enabled', label: '核对上次付费点金' }, ok: true, status: 'confirmed',
+      note: `上次点金奖励及次数已确认，今日已付费 ${plan.goldInfo.paidTimes} 次` };
+    results.push(row); onStep?.(row);
+  }
   for (const step of plan.actions) {
     if (!enabled()) break;
     let ticket = null, choiceTicket = null, prepared = false, sent = false, writePending = false, entry, petBefore, waterSnapshot;
@@ -473,6 +539,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         }
         if (!enabled() || current !== getSettings() || !getSettings().pet.enabled || !getSettings().pet[key]) throw new AutomationSkip('海兽操作设置已变化或已暂停');
       }
+      if (step.kind === 'paidGold') await checkPaidGoldBeforeSend(client, protocol, step, current);
       ticket = await guard.before(step, { waterSnapshot }); prepared = true;
       if (!enabled() || current !== getSettings()) { await guard.cancel(step, ticket, { notSent: true }); if(choiceTicket)ledger.cancel(choiceTicket); break; }
       if (dispatchChanged()) throw new AutomationSkip('探宝派遣设置已变化，等待重新规划');
@@ -493,10 +560,6 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
           body = { settlement: body, ...reward };
         }
         if (step.kind === 'museumGuide' && (!Number.isSafeInteger(body.expedition?.endTime) || body.expedition.endTime >= step.verify.endTime)) throw new Error('服务器尚未确认探险指南缩短了时间，额度暂时保留');
-        if (step.kind === 'paidGold') {
-          const after = normalize(await client.request('ClickGoldInfoRequest', {}, 'ClickGoldInfoResponse'));
-          if (!Number.isSafeInteger(after.info?.paidTimes) || after.info.paidTimes < step.verify.paidBefore + step.body.times) throw new Error('服务器尚未确认付费点金次数，额度暂时保留');
-        }
         if (step.kind === 'museumKeyword' || step.kind === 'museumExhibition') {
           const after = normalize(await client.request('MuseumInfoRequest', {}, 'MuseumInfoResponse'));
           const ex = after.exhibitions?.find(row => row.exhibitionId === step.body.exhibitionId);
@@ -504,6 +567,10 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
           if (!Number.isSafeInteger(actual) || actual < step.verify.level) throw new Error('服务器尚未确认博物馆升级');
         }
         entry = { step, ok: true, body };
+        if (step.kind === 'paidGold') {
+          const reason = await checkPaidGoldReceipt(client, step, body, ledger, ticket);
+          if (reason) entry = { step, ok: false, status: 'pending', reason, body };
+        }
       } else {
         const watched = await client.sendWatch(step.request, wireBody, { window: 500 });
         writePending = false;
@@ -536,8 +603,14 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
     } catch (error) {
       const notSent = !sent || (writePending && error.notSent === true);
       if(choiceTicket && (notSent || error.prompt&&error.request==='SelectChoiceRequest'))ledger.cancel(choiceTicket);
-      if (prepared) await guard.cancel(step, ticket, { notSent, error });
-      entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
+      const pendingGold = step.kind === 'paidGold' && !notSent && !(writePending && error.prompt && error.request === step.request);
+      if (pendingGold) {
+        entry = { step, ok: false, status: 'pending', reason: `点金结果待核对，已保留次数与钻石额度（${error.message}）` };
+        await guard.after(step, ticket, entry);
+      } else {
+        if (prepared) await guard.cancel(step, ticket, { notSent, error });
+        entry = { step, ok: false, ...(error.code === 'AUTOMATION_SKIP' ? { skipped: true } : {}), error: error.message };
+      }
     }
     results.push(entry); onStep?.(entry);
   }
