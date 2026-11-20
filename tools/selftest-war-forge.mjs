@@ -21,7 +21,7 @@ const check = async (name, action) => {
   catch (error) { results.push({ name, passed: false, error: error.stack }); console.error('失败：' + name + '\n' + error.stack); }
 };
 const warRead = (f, s) => readCityWar(f.client, f.protocol, f.config, f.player, s.cityWar, { mapLoader: f.mapLoader });
-const warPlan = async (f, s, usage = ledger()) => planCityWar(await warRead(f, s), s, { usage: usage.snapshot(), keys: usage.keyRecords(), pendingPetrol: (usage.pendingCounters().cityWarPetrol ?? 0) + (usage.pendingCounters().treasurePetrol ?? 0) });
+const warPlan = async (f, s, usage = ledger()) => planCityWar(await warRead(f, s), s, { keys: usage.keyRecords(), pendingPetrol: (usage.pendingCounters().cityWarPetrol ?? 0) + (usage.pendingCounters().treasurePetrol ?? 0) });
 const warRun = (f, s, usage = ledger(), options = {}) => runCityWar(f.client, f.protocol, f.config, f.player, { getSettings: () => s, ledger: usage, mapLoader: f.mapLoader, ...options });
 const forgeRead = f => readEquipmentForge(f.client, f.protocol, f.config, f.player);
 const forgePlan = async (f, s, usage = ledger()) => planEquipmentForge(await forgeRead(f), f.config, s, { usage: usage.snapshot(), keys: usage.keyRecords() });
@@ -214,9 +214,10 @@ await check('完整维修只检查实际汽油，旧保留/单次/每日限制�
 });
 await check('城战派遣确认、防重复与返航后继续接续', async () => {
   const f=warForgeFixture(),s=warForgeSettings(),u=ledger();s.cityWar.fleetIds=['1远征船'];
+  u.confirm(u.reserve({ cityWarDispatches: 10 }));
   assert.equal((await warRun(f,s,u)).results[0].status,'confirmed');
   await warRun(f,s,u);assert.equal(f.client.writes.length,1);
-  f.returnFleet('1远征船');await warRun(f,s,u);assert.equal(f.client.writes.length,2);assert.equal(u.snapshot().counters.cityWarDispatches,2);
+  f.returnFleet('1远征船');await warRun(f,s,u);assert.equal(f.client.writes.length,2);assert.equal(u.snapshot().counters.cityWarDispatches,12);
   assert(f.client.writes.every(row=>row.name==='MoveFleetsToCityRequest'));
 });
 await check('维修确认后等待完成，完成后出战且不篡改委任开关', async () => {

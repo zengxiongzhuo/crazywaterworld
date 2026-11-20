@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createUsageLedger, defaultSettings, validateSettings } from '../src/automation-settings.mjs';
-import { readResourceFieldState, previewResourceField, previewResourceFieldPlan, runResourceFieldShortcut, runResourceFields,
+import { readResourceFieldState, readResourceFieldsOverview, previewResourceField, previewResourceFieldPlan, runResourceFieldShortcut, runResourceFields,
   previewResourceFieldGiveUp, runResourceFieldGiveUp } from '../src/resource-field-automation.mjs';
 import { fleetRecordReason, reserveDispatch } from '../src/fleet-availability.mjs';
 import { checkFleetSettlement, settleFleetSnapshot, outstandingFleets } from '../src/fleet-settlement.mjs';
@@ -48,6 +48,16 @@ try {
     assert(!state.candidates.some(row => [30, 40].includes(row.grid)));
     const p = await preview(t); assert.equal(p.cost, 300); assert(p.fleets.some(fleet => fleet.available));
     assert.equal(t.f.client.writes.length, 0); assert.equal(Object.keys(t.ledger.keyRecords()).length, 0);
+  });
+  await test('资源田总览返回超过 60 块的同类候选，包括低等级地块', async () => {
+    const { f, options } = setup();
+    f.state.mapFields = Array.from({ length: 64 }, (_, gridIdx) => ({
+      gridIdx, cityId: gridIdx === 63 ? 2 : 1, resType: 1,
+    }));
+    const view = await readResourceFieldsOverview(f.client, f.protocol, f.config, f.player, options);
+    assert.equal(view.candidateCount, 64);
+    assert.equal(view.candidates.length, 64);
+    assert(view.candidates.some(field => field.grid === 63 && field.level === 4));
   });
   await test('主城产量取联盟等级，推荐战力取1级；普通田取resLevel', async () => {
     const t = setup(), state = await read(t);

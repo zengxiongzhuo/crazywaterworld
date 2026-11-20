@@ -35,7 +35,7 @@ const add = (ledger, key, details, confirmed = true, counters = {}) => {
   const t = ledger.reserve(counters, {}, {}, { uniqueKey: key, details });
   if (confirmed) ledger.confirm(t);
 };
-const settle = (l, fleets, opts = {}) => settleFleetSnapshot(l, { worldId: world, now, fleets, ...opts });
+const settle = (l, fleets, opts = {}) => settleFleetSnapshot(l, { worldId: world, now, readStartedAt: Date.now(), fleets, ...opts });
 const test = async (name, fn) => {
   await fn();
   console.log('通过：' + name);
@@ -158,6 +158,90 @@ await test('关闭任务或跨重启也核对旧占用，核对只读、不派�
   });
   assert.equal(f.client.writes.length, 0);
   assert.equal(l.confirmedCounters().radarPetrol, 500);
+});
+await test('旧情报派遣未获确认，等待十五分钟后按新回包释放归队舰队，保留汽油和防重键', async () => {
+  const id = '2远征船', uid = '9007199254740995', key = 'radar-send:' + world + ':' + uid;
+  const event = { uid, eventId: 20001, state: 1, createTime: 1, gridIdx: 0, citySpy: { cityId: 100 } };
+  for (const events of [[event], []]) {
+    const file = path.join(dir, ++seq + '.json');
+    const old = createUsageLedger('sample', { file, now: () => Date.now() - 16 * 60_000 });
+    add(old, key, { kind: 'radarSend', buildingId: id, eventKey: uid, active: true }, false, { radarPetrol: 500 });
+    const ledger = createUsageLedger('sample', { file });
+    const client = { request: async name => {
+      if (name === 'MyFleetsRequest') return { fleets: [home(id)] };
+      if (name === 'RadarInfoRequest') return { radarInfo: { events } };
+      assert.fail('不应补发操作 ' + name);
+    } };
+    assert.equal((await checkFleetSettlement(client, { worldId: world }, ledger)).length, 1);
+    const record = ledger.keyRecords()[key];
+    assert.equal(record.details.active, false);
+    assert.equal(record.confirmed, false);
+    assert.equal(fleetRecordReason(ledger.keyRecords(), id, world), '');
+    assert.equal(ledger.pendingCounters().radarPetrol, 500);
+    assert.equal(ledger.confirmedCounters().radarPetrol ?? 0, 0);
+    assert.throws(() => ledger.reserve({}, {}, {}, { uniqueKey: key }), /重复发送/);
+    assert.deepEqual(await checkFleetSettlement(client, { worldId: world }, ledger), []);
+  }
+});
+await test('过期的未知情报仍须完整事件和同队空闲证据；迟到快照和进行中的事件不解锁', () => {
+  const id = '2远征船', key = 'radar-send:' + world + ':' + fk;
+  const l = createUsageLedger('sample', {
+    file: path.join(dir, ++seq + '.json'), now: () => Date.now() - 16 * 60_000
+  });
+  add(l, key, { kind: 'radarSend', buildingId: id, eventKey: fk, active: true }, false);
+  const fleet = home(id);
+  const reservedAt = l.reservationTime(key);
+  assert.deepEqual(settle(l, [fleet], { events: [], readStartedAt: reservedAt + 15 * 60_000 - 1 }), []);
+  for (const fleets of [[], [home('1远征船')], [fleet, fleet], [{ ...fleet, state: 2 }],
+    [{ ...fleet, curGridIdx: undefined }], [{ ...fleet, targetGridIdx: 999 }],
+    [{ ...fleet, targetCityId: 5 }], [{ ...fleet, repairing: { endTs: now + 1 } }],
+    [{ ...fleet, autoFight: { isOn: true } }]]) {
+    assert.deepEqual(settle(l, fleets, { events: [] }), []);
+  }
+  for (const events of [null, radarEvents({ events: [], fixedEvent: { ...radar, state: 2 } }),
+    radarEvents({ events: [], fixedEvent: { ...radar, startTime: now - 1 } })]) {
+    assert.deepEqual(settle(l, [fleet], { events }), []);
+  }
+  assert.deepEqual(settle(l, [fleet], { events: [], baseline: { [key]: { id: 'old', confirmed: false } } }), []);
+  assert(l.keyRecords()[key].details.active);
+  assert.equal(settle(l, [fleet], { events: [], readStartedAt: reservedAt + 15 * 60_000 }).length, 1);
+});
+await test('联盟情报自动处理可用已解锁舰队处理新目标，原目标和未确认耗材继续预留', async () => {
+  const f = pirateAdvanceFixture(), id = f.fleet.buildingId;
+  const original = { uid: '9001', eventId: 21001, state: 1, createTime: 10, gridIdx: 51,
+    refugee: { requirements: [{ id: '木材', num: 1 }] } };
+  const next = { uid: '9003', eventId: 10001, state: 1, createTime: 10, gridIdx: 53, pirate: { type: 1, level: 1 } };
+  const events = [original, { ...original, uid: '9002', gridIdx: 52 }, next];
+  const key = 'radar-send:' + f.player.worldId + ':' + original.uid;
+  const file = path.join(dir, ++seq + '.json');
+  const old = createUsageLedger('sample', { file, now: () => Date.now() - 16 * 60_000 });
+  add(old, key, { kind: 'radarSend', buildingId: id, eventKey: original.uid, active: true, materialCeilings: { 木材: 0 } },
+    false, { radarPetrol: 500 });
+  const ledger = createUsageLedger('sample', { file });
+  f.player.guildId = '1001007';
+  f.fleet.autoFight.isOn = false;
+  Object.assign(f.settings.radar, { runEnabled: true, enabled: true, fleetIds: [id], types: ['refugee', 'pirate'], allowMaterials: true });
+  f.config.tables.ModuleOpenCfg.data.push({ moduleId: '联盟情报', playerLevel: 16 });
+  f.config.tables.WorldParamCfg.data.push({ paramName: '情报事件消耗汽油', paramValue: 500 });
+  const read = f.client.request;
+  f.client.request = async (name, ...args) => {
+    if (name === 'RadarInfoRequest') return { radarInfo: { events } };
+    if (name === 'AllItemRequest') return { items: [{ itemId: '汽油', num: 1000 }, { itemId: '木材', num: 1 }] };
+    return read(name, ...args);
+  };
+  const sent = [];
+  f.client.sendWatch = async (name, body) => {
+    sent.push({ name, uid: body.uid.low, fleets: body.fleetBuildingIds });
+    next.state = 3;
+  };
+  await runAllianceRadar(f.client, f.config, f.player, {
+    getSettings: () => f.settings, enabled: () => true, ledger, report: () => {}
+  });
+  assert.deepEqual(sent, [{ name: 'RadarSendFleetsRequest', uid: 9003, fleets: [id] }]);
+  assert(ledger.hasKey(key));
+  assert.equal(ledger.keyRecords()[key].confirmed, false);
+  assert.equal(ledger.pendingCounters().radarPetrol, 500);
+  assert.equal(ledger.confirmedCounters().radarPetrol, 500);
 });
 await test('Boss漏掉行军时只用本期个人战报或跨日归队解除，保留每日防重键', async () => {
   const l = make(),

@@ -27,6 +27,7 @@ import { readSiliconOverview } from './silicon-overview.mjs';
 import { previewExtended } from './extended-preview.mjs';
 import {watchFleetMaintenance,fleetMaintenanceEnabled} from './fleet-maintenance.mjs';
 import {watchFleetSpeed,readFleetSpeed,planFleetSpeed,fleetSpeedEnabled} from './fleet-speed.mjs';
+import { previewManualFleetSpeed, runManualFleetSpeed } from './manual-fleet-speed.mjs';
 import {observeOwnedFleets,ownedFleetCatalog} from './fleet-catalog.mjs';
 import {readPirateSweeps} from './pirate-sweeps.mjs';
 import {readWorldTarget} from './world-target.mjs';
@@ -2637,7 +2638,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
           if (category === 'cityWar') {
             const state = await readCityWar(client, protocolFor(client), config, session.player, settings.cityWar);
             const ledger = usageFor(session), pending = ledger.pendingCounters();
-            const plan = planCityWar(state, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) + (pending.worldBossPetrol ?? 0) + (pending.siliconPetrol ?? 0) + (pending.resourceFieldPetrol ?? 0) });
+            const plan = planCityWar(state, settings, { keys: ledger.keyRecords(), pendingPetrol: (pending.cityWarPetrol ?? 0) + (pending.treasurePetrol ?? 0) + (pending.piratePetrol ?? 0) + (pending.radarPetrol ?? 0) + (pending.worldBossPetrol ?? 0) + (pending.siliconPetrol ?? 0) + (pending.resourceFieldPetrol ?? 0) });
             const online = await readWorldOnlineReward(client, config, session.player);
             if (!settings.schedule.worldOnlineRewards) plan.notes.push('城战在线奖励自动领取未开启');
             else if (online.ready && worldOnlineRewardKey(session.player, online)) {
@@ -2650,9 +2651,8 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
               if (guild.welfareCount > 0) plan.actions.push({ kind: 'guildWelfare', label: `领取联盟福利礼包（${guild.welfareCount}份）`, costs: [] });
               else plan.notes.push('联盟福利：' + (guild.reason || (guild.welfareCount === 0 ? '当前无待领礼包' : '待领数量未确认')));
             }
-            if (settings.fleetSpeed.enabled || settings.fleetSpeed.fleets.some(fleet =>
-              settings.cityWar.fleetIds.includes(fleet.id) && (fleet.repair || fleet.march))) {
-              const speed=planFleetSpeed(fleetSpeedEnabled(settings) ? await readFleetSpeed(client,session.player) : null,config,settings,ledger);
+            if (fleetSpeedEnabled(settings)) {
+              const speed=planFleetSpeed(await readFleetSpeed(client,session.player),config,settings,ledger);
               plan.actions.push(...speed.actions);plan.notes.push(...speed.notes);
             }
             return { ...output(plan, { fleets: state.fleets.length, targets: state.targets.length }, '联盟城战'), onlineReward: online, cityWar: {
@@ -2682,7 +2682,7 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
             if (cityWarEnabled(settings)) {
               const war = await readCityWar(client, protocolFor(client), config, session.player, settings.cityWar);
               reservedFleetIds = war.reason && settings.cityWar.reserveDuringWar ? [...settings.cityWar.fleetIds]
-                : planCityWar(war, settings, { usage, keys: ledger.keyRecords(), pendingPetrol: pendingFuel }).reservedFleetIds;
+                : planCityWar(war, settings, { keys: ledger.keyRecords(), pendingPetrol: pendingFuel }).reservedFleetIds;
             }
             const task = settings.treasure.follow ? 'follow' : 'treasure';
             const unavailableFleets = Object.fromEntries(settings.treasure.fleetIds.map(id => [id,
@@ -4023,6 +4023,49 @@ export function createConsole({ host = '127.0.0.1', port = 17321, onLog, recover
                 { ...target, buildingId, intent: quote.dispatch.intent, role: quote.dispatch.role, cost: quote.dispatch.cost, owner: quote.dispatch.owner }, { validate })
               : await command.run(client, protocol, config, player, { ...quote.actions[action], ...target }, { validate, ledger });
             emit(session, result.confirmed || result.status === 'confirmed' ? 'info' : 'warn', label + ' · ' + result.message);
+            return result;
+          }, label).finally(() => { quote.completed = true; });
+        }
+        json(await quote.job); return;
+      }
+      if (route === 'POST /api/world/fleet-speed/preview') {
+        const { session } = scoped_(parsed), target = jsonBody();
+        const { client, player, generation } = session;
+        if (!client?.connected || !player || session.paused) throw Error('请先连接当前账号，再加速舰队');
+        const config = loadConfigSafe(), worldId = exactAutomationId(player.worldId), playerId = exactAutomationId(player.playerId);
+        if (!config || !worldId || !playerId) throw Error('角色或加速费用配置未同步');
+        const validate = () => {
+          if (session.client !== client || !client.connected || session.paused || session.connectionDrain || closing ||
+              session.generation !== generation || session.player !== player || exactAutomationId(player.worldId) !== worldId ||
+              exactAutomationId(player.playerId) !== playerId || loadConfigSafe() !== config) throw Error('角色、连接或费用配置已变化，请重新选择舰队');
+        };
+        const protocol = protocolFor(client), ledger = usageFor(session);
+        const preview = await readJob(session, () => {
+          validate();
+          return previewManualFleetSpeed(client, protocol, config, player, target, { ledger });
+        }, { recoverFormation: false });
+        validate();
+        const quotes = session.manualFleetSpeedQuotes ??= new Map();
+        for (const [key, quote] of quotes) {
+          if (quote.expiresAt <= Date.now() && (!quote.job || quote.completed)) quotes.delete(key);
+        }
+        if (quotes.size >= 100) throw Error('舰队加速报价过多，请稍后再试');
+        const token = randomUUID(), expiresAt = Date.now() + 120000;
+        quotes.set(token, { preview, expiresAt, validate, client, protocol, config, player, ledger });
+        json({ token, expiresAt, maxCost: preview.maxCost }); return;
+      }
+      if (route === 'POST /api/world/fleet-speed/action') {
+        const payload = jsonBody(); needConfirm(payload);
+        const { session } = scoped_(parsed), quote = session.manualFleetSpeedQuotes?.get(payload.token);
+        if (!quote || payload.confirmedCost !== quote.preview.maxCost) throw Error('请重新确认舰队及最高钻石费用');
+        if (!quote.job) {
+          const label = quote.preview.mode === 'repair' ? '维修加速' : '派遣加速';
+          quote.job = enqueue(session, async () => {
+            if (Date.now() >= quote.expiresAt) throw Error('加速报价已过期，请重新选择舰队');
+            quote.validate();
+            const result = await runManualFleetSpeed(quote.client, quote.protocol, quote.config, quote.player, quote.preview,
+              { ledger: quote.ledger, validate: quote.validate });
+            emit(session, result.status === 'completed' ? 'info' : 'warn', quote.preview.buildingId + ' · ' + label + ' · ' + result.message);
             return result;
           }, label).finally(() => { quote.completed = true; });
         }

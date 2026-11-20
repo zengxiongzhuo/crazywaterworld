@@ -5,6 +5,7 @@ import { normalize } from './worlds.mjs';
 import { exactAutomationId } from './automation-policy.mjs';
 import { createGuildNameResolver } from './guild-name.mjs';
 import { fleetRecordReason, dispatchReservationReason, fleetDispatchView } from './fleet-availability.mjs';
+import { fleetSpeedTarget } from './manual-fleet-speed.mjs';
 
 // 只读概览：静态资源只提供位置，归属和状态仅取本次服务器返回。
 export async function readWorldOverview(client,config,player,settings,ledger,{mapLoader=loadMapAsset,pirateSpent=0}={}) {
@@ -45,12 +46,12 @@ export async function readWorldOverview(client,config,player,settings,ledger,{ma
   const queue='进攻队列 '+quantity(city.attackFleetNum)+'（优先 '+quantity(city.priorityAtkFleetNum)+'） · 防守队列 '+quantity(city.defenceFleetNum)+'（优先 '+quantity(city.priorityDefFleetNum)+'）';
   const warDetail=declared.length?'宣战：'+declared.map(d=>guildName(d.attackGuildIdx)+' → '+guildName(d.defenceGuildIdx)).join('；')+' · '+(warOpen?'城战时段':'非城战时段')+' · '+queue+' · 交战点 '+fights.length+' · 已同步行军 '+(Array.isArray(world?.fleets)?inbound.length:'未同步')+' 队':'';
   const declarationNames=declared.map(d=>({attack:guildName(d.attackGuildIdx),defence:guildName(d.defenceGuildIdx)}));
-  const status=fights.length?'交战中':declared.length?(warOpen?'已宣战':'已宣战 · 非城战时段'):warOpen?'当前无宣战':'非城战时段';
+  const status=fights.length?'交战中':!war?'未同步':declared.length?(warOpen?'已宣战':'已宣战 · 当前非城战时间'):warOpen?'当前无宣战':'当前非城战时间';
   const cityInfo={name:cfg?.name||'城池 '+city.id,owner:guildName(city.guildIdx),status,declared:declarationNames,assemble:war?.assembleCityId===city.id,attack:city.attackFleetNum,priorityAttack:city.priorityAtkFleetNum,defence:city.defenceFleetNum,priorityDefence:city.priorityDefFleetNum,
    fighters:fights.map(b=>({index:b.index,attack:b.leftFighter.name||(b.leftFighter.isNpc?'守卫':'未同步'),defence:b.rightFighter.name||(b.rightFighter.isNpc?'守卫':'未同步')}))};
   const point={cityId:city.id,cityType:cfg?.type??1,capital:cfg?.guildIndex>0,owner:city.guildIdx,color:ownerColor(city.guildIdx),declared:declared.length>0,fighting:fights.length>0,warDetail,cityInfo,assemble:cityInfo.assemble,warRole:declared.some(d=>d.attackGuildIdx===ownGuildIdx)?'attack':declared.some(d=>d.defenceGuildIdx===ownGuildIdx)?'defence':'other'};
   add('cities','city-'+city.id,cfg?.name||'城池 '+city.id,map?.cityInfo?.[city.id]?.gridIdx,'所属：'+guildName(city.guildIdx)+' · '+(warDetail||queue),point);
-  if(declared.length||fights.length)cityWars.push({cityId:city.id,name:cfg?.name||'城池 '+city.id,declared:declared.map(d=>({attack:guildName(d.attackGuildIdx),defence:guildName(d.defenceGuildIdx)})),attack:city.attackFleetNum,priorityAttack:city.priorityAtkFleetNum,defence:city.defenceFleetNum,priorityDefence:city.priorityDefFleetNum,battles:fights.length,inbound:Array.isArray(world?.fleets)?inbound.length:null,status:fights.length?'交战中':warOpen?'已宣战':'已宣战 · 非城战时段'});
+  if(declared.length||fights.length)cityWars.push({cityId:city.id,name:cfg?.name||'城池 '+city.id,declared:declarationNames,attack:city.attackFleetNum,priorityAttack:city.priorityAtkFleetNum,defence:city.defenceFleetNum,priorityDefence:city.priorityDefFleetNum,battles:fights.length,inbound:Array.isArray(world?.fleets)?inbound.length:null,status});
  }
  layers.cityWar=Array.isArray(war?.declarations)&&Array.isArray(world?.cities)?'已同步':'未同步';
 
@@ -74,7 +75,8 @@ export async function readWorldOverview(client,config,player,settings,ledger,{ma
   add('fleets','fleet-'+f.buildingId,name,grid,detail+taskDetail,{motion});
   const start=pos(f.startGridIdx),end=pos(f.targetGridIdx);
   if(f.state===2&&f.startGridIdx>0&&f.targetGridIdx>0&&start&&end)routes.push({start,end,name,key:'fleet-'+f.buildingId,color:'#2866cc'});
-  return {id:f.buildingId,name,state,detail:detail+taskDetail,grid,durability:f.durability,maxDura:f.maxDura,arriveAt:f.state===2?f.moveEndTs:null,journey:motion,task:'未同步',target:'未同步'};
+  return {id:f.buildingId,name,state,detail:detail+taskDetail,grid,durability:f.durability,maxDura:f.maxDura,arriveAt:f.state===2?f.moveEndTs:null,journey:motion,
+   speedTarget:fleetSpeedTarget(raw,player),task:'未同步',target:'未同步'};
  });
  layers.fleets=Array.isArray(own?.fleets)?'已同步':'未同步';
  layers.treasure=Array.isArray(treasure?.treasure)?'已同步':'未同步';
@@ -134,8 +136,10 @@ export async function readWorldOverview(client,config,player,settings,ledger,{ma
   const name=(raw.owner.nickname||'已同步玩家')+' · 舰队'+raw.buildingId.replace('远征船',''),targetName=target?.name||city?.name||'目标格 '+raw.targetGridIdx;
   const detail='行军至 '+targetName+' · 耐久 '+quantity(raw.durability)+'/'+quantity(raw.maxDura)+' · 预计到达 '+(raw.moveEndTs>0?new Date(raw.moveEndTs*1000).toLocaleTimeString('zh-CN',{timeZone:'Asia/Shanghai'}):'未同步');
   const motion=makeMotion(raw),ownerGuild=exactAutomationId(raw.owner.guildId),color=ownerColor(ownerGuild?Number(BigInt(ownerGuild)%1000n):null);
-  add('traffic','traffic-'+key,name,raw.startGridIdx,detail,{motion,routeColor:color});routes.push({start,end,name,layer:'traffic',target:targetName,key:'traffic-'+key,color});
+  const fleetInfo={state:'行军',durability:raw.durability,maxDura:raw.maxDura,task:'行军至 '+targetName};
+  add('traffic','traffic-'+key,name,raw.startGridIdx,detail,{motion,routeColor:color,fleetInfo});routes.push({start,end,name,layer:'traffic',target:targetName,key:'traffic-'+key,color});
  }
  layers.traffic=Array.isArray(world?.fleets)?'仅显示服务器已同步的城战/货轮行军':'未同步';
- return {checkedAt:now,scenario,...(map?mapDimensions(map):{width:1,height:1}),regions,owners,home:points.find(p=>p.layer==='fleets')??points.find(p=>p.layer==='cities'&&p.owner===ownGuildIdx),points,routes,fleets,cityWars,treasures,war:{startTime:war?.startTime??null,endTime:war?.endTime??null,inWindow:!!warOpen},layers,resources,budgets,fuelUsage,notes:[...notes,...(!map?['场景位置未读取，地图暂不可用']:[]),'行军位置按已同步起终点和时间推算，以最新同步状态为准。空联盟名称按游戏规则显示主城默认名；未同步的行军不作推测。']};
+ if(!map)notes.push('场景位置未读取，地图暂不可用');
+ return {checkedAt:now,scenario,...(map?mapDimensions(map):{width:1,height:1}),regions,owners,home:points.find(p=>p.layer==='fleets')??points.find(p=>p.layer==='cities'&&p.owner===ownGuildIdx),points,routes,fleets,cityWars,treasures,war:{startTime:war?.startTime??null,endTime:war?.endTime??null,inWindow:!!warOpen},layers,resources,budgets,fuelUsage,notes};
 }

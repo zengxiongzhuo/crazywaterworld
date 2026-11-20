@@ -18,6 +18,7 @@ await test('空联盟名按游戏出生主城取名，不再使用联盟2/4；�
  for(const id of [3,4])f.responses.WorldInfoRequest.cities.push({id:cities.find(c=>c.guildIndex===id).id,guildIdx:id,battlePoints:[],attackFleetNum:0,defenceFleetNum:0});
  f.responses.AllGuildAbstractionRequest.guilds=[{id:1001,name:'自定义联盟'},{id:1002},{id:1003,name:'青玄'},{id:1004}];
  const d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map});assert.equal(d.owners.find(o=>o.id===2).name,'铁锈湾');assert.equal(d.owners.find(o=>o.id===4).name,'风栖港');assert.match(d.owners.find(o=>o.id===1).name,/自定义联盟/);
+ assert.doesNotMatch(d.notes.join(' '),/行军位置按已同步|空联盟名称按游戏规则|未同步的行军不作推测/);
  const silicon=siliconFixture();silicon.config.tables['1_CityCfg']=f.config.tables['1_CityCfg'];silicon.state.guilds=f.responses.AllGuildAbstractionRequest.guilds;
  for(const [slot,id] of [2,4,1].entries())silicon.enemy(slot,'船长'+id,900,id);
  const view=await readSiliconOverview(silicon.client,silicon.protocol,silicon.config,silicon.player);
@@ -47,6 +48,7 @@ await test('资源田占领的已确认和待确认汽油分别计入总用量',
 await test('己方与其他行军都有起终点时间；静止舰队不生成虚构征程',async()=>{
  const f=await commentsEighteenFixture(),d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map});assert.equal(d.fleets[0].journey,null);assert(d.fleets[1].journey.from);assert.equal(d.fleets[2].journey.to,'万吨货轮');
  const foreign=d.points.find(p=>p.layer==='traffic');assert(foreign.motion);assert.equal(foreign.motion.to,'万吨货轮');assert.equal(mapMotionPosition(foreign,foreign.motion.startAt).x,foreign.motion.start.x);
+ assert.deepEqual(foreign.fleetInfo,{state:'行军',durability:1700,maxDura:2050,task:'行军至 万吨货轮'});
 });
 await test('宣战/交战/集结及攻守优先+普通排队来自独立字段',async()=>{
  const f=await commentsEighteenFixture(),d=await readWorldOverview(f.client,f.config,f.player,f.settings,ledger,{mapLoader:async()=>f.map}),city=d.points.find(p=>p.cityId===f.targetCity);assert(city.declared&&city.fighting&&city.assemble);assert.equal(city.warRole,'attack');assert.deepEqual([city.cityInfo.priorityAttack,city.cityInfo.attack,city.cityInfo.priorityDefence,city.cityInfo.defence],[2,8,3,7]);assert.equal(city.cityInfo.fighters.length,1);

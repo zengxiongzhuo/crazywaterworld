@@ -63,7 +63,95 @@ function assertIsolated(observed, owner, pattern, others) {
   for (const key of others) assert.doesNotMatch(observed.text(key), pattern, key + ' 不应显示其他动作的阻断原因');
 }
 
+function advanceFixture() {
+  const f = fixture();
+  const { config, settings, snapshot, room } = f;
+  Object.assign(settings.factory, { enabled: true, demandFirst: true, demandPriority: ['petAdvance', 'museum', 'petFeed'] });
+  Object.assign(settings.pet, { advance: true, feed: true, breed: false });
+  config.tables.PetAdvancedCfg = { data: [{ grade: 0, level: 0 }, { grade: 1, level: 5 }] };
+  config.tables.PetFeedAttrCfg = { data: [0, 1].map(level => ({ level, attrCounts: [2] })) };
+  snapshot.world.stock.set('木板', 5);
+  snapshot.museum.exhibitions = [{ exhibitionId: 1, level: 1, keywordLevels: [0, 0, 0] }];
+  room.petBreed.breedQ = [{ idx: 1, finishTime: snapshot.now + 1000, feedRequirements: [{ id: '木板', num: 5 }] }];
+  snapshot.pets = [{ uid: '101', petId: '红宠物4', level: 5, profFeed: [{ attrFeed: [{ times: 0 }] }] }];
+  snapshot.world.buildings.push({ buildingId: '值守建筑', petServe: { petUid: '101',
+    upgradeRequirements: [{ id: '木板', num: 2 }, { id: '木板', num: 3 }] } });
+  return f;
+}
+
 try {
+  await test('同一批库存按海兽进阶、培育投喂和博物馆优先级使用，能反转也能关闭', () => {
+    const { config, settings, snapshot } = advanceFixture();
+    const plan = () => planBaseAutomation(snapshot, config, settings);
+    const steps = result => result.actions.filter(step => step.costs?.some(cost => cost.id === '木板'));
+    const advance = steps(plan());
+    assert.deepEqual(advance.map(step => step.kind), ['petAdvanceFeed']);
+    assert.deepEqual(advance[0].costs, [{ id: '木板', num: 5 }]);
+    for (const [source, kind] of [['petFeed', 'petFeed'], ['museum', 'museumKeyword']]) {
+      settings.factory.demandPriority = [source, 'petAdvance'];
+      const result = plan();
+      assert.deepEqual(steps(result).map(step => step.kind), [kind]);
+      assert.match(result.notesBySetting['pet.advance'].join(''), /木板需要 5，库存 5，本轮已安排 5，可用 0/);
+    }
+    settings.factory.demandPriority = ['petAdvance'];
+    settings.factory.demandFirst = false;
+    assert.deepEqual(steps(plan()).map(step => step.kind), ['museumKeyword']);
+  });
+
+  await test('提高投喂优先级只作用于已有队列，新开培育、领取仍排在博物馆之后', () => {
+    const { config, settings, snapshot, room } = advanceFixture();
+    settings.factory.demandPriority = ['petFeed', 'museum', 'petAdvance'];
+    Object.assign(settings.pet, { feed: false, breed: true });
+    room.petBreed.breedQ = [];
+    config.tables.PetBreedCfg = { data: [{ spId: 1, petId: '蓝宠物1', season: 1, quality: 'BLUE',
+      cost: [['专属基因', 1], ['GOLD', 5]] }] };
+    config.tables.MuseumAreaIndicatorCfg.data[0].upgradeCost = ['GOLD', 5];
+    snapshot.world.stock.set('专属基因', 1);
+    const kinds = () => planBaseAutomation(snapshot, config, settings).actions.map(step => step.kind);
+    snapshot.world.stock.set('GOLD', 5);
+    assert(kinds().includes('museumKeyword'));
+    assert(!kinds().includes('petBreed'));
+    snapshot.world.stock.set('GOLD', 10);
+    assert.deepEqual(kinds().filter(kind => ['museumKeyword', 'petBreed'].includes(kind)), ['museumKeyword', 'petBreed']);
+    room.petBreed.maturePets = [{ petId: '蓝宠物1' }];
+    assert.deepEqual(kinds().filter(kind => ['museumKeyword', 'petClaim'].includes(kind)), ['museumKeyword', 'petClaim']);
+  });
+
+  await test('海兽进阶区分真实库存不足、设置保留和库存读取失败', () => {
+    const { config, settings, snapshot } = advanceFixture();
+    const plan = () => planBaseAutomation(snapshot, config, settings);
+    snapshot.world.stock.set('木板', 4);
+    assert.match(plan().notesBySetting['pet.advance'].join(''), /木板需要 5，库存 4，可用 4/);
+    snapshot.world.buildings.at(-1).petServe.upgradeRequirements = [{ id: '加速器', num: 2 }];
+    snapshot.world.stock.set('加速器', 2);
+    settings.resources.keepAccelerators = 1;
+    assert.match(plan().notesBySetting['pet.advance'].join(''), /加速器需要 2，库存 2，设置保留 1，可用 1/);
+    snapshot.world.stockKnown = false;
+    const missing = plan();
+    assert.match(missing.notesBySetting['pet.advance'].join(''), /未能读取完整库存/);
+    assert(!missing.actions.some(step => step.kind === 'petAdvanceFeed'));
+    snapshot.world.stockKnown = true;
+    snapshot.world.resourceStockKnown = false;
+    settings.resources.keepAccelerators = 0;
+    assert(plan().actions.some(step => step.kind === 'petAdvanceFeed'));
+  });
+
+  await test('投喂满后按等级进阶，最高阶可继续投喂直至本阶进度满', () => {
+    const { config, settings, snapshot } = advanceFixture();
+    const pet = snapshot.pets[0];
+    const actions = () => planBaseAutomation(snapshot, config, settings).actions.filter(step => step.setting === 'pet.advance').map(step => step.kind);
+    pet.profFeed[0].attrFeed[0].times = 2;
+    pet.level = 4;
+    assert.deepEqual(actions(), []);
+    pet.level = 5;
+    assert.deepEqual(actions(), ['petAdvance']);
+    pet.grade = 1;
+    pet.profFeed[0].attrFeed[0].times = 1;
+    assert.deepEqual(actions(), ['petAdvanceFeed']);
+    pet.profFeed[0].attrFeed[0].times = 2;
+    assert.deepEqual(actions(), []);
+  });
+
   await test('博物馆各行不混入海兽满队列、随机事件与点金条件', () => {
     const f = fixture();
     const plan = planBaseAutomation(f.snapshot, f.config, f.settings);

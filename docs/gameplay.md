@@ -759,7 +759,7 @@ node tools/selftest-describe.mjs    # 字段布局还原自检
 
 宣战使用 `DeclareWarRequest { cityId }`。界面从 `GuildInfoResponse.myTitle` 核对盟主或副盟主身份，同时检查本盟已有目标数、相邻领地、黑潮范围、赛季城市等级和干扰器。提交后读取 `WarDeclarationResponse.declarations`，匹配本盟和目标城后显示成功。
 
-本盟城池受宣战或已交战时，手动调动显示为「增援」。高级募兵使用 `CityRecruitDefenceRequest`，资格取自 `VipLevelCfg`，每枚令牌的增兵数取自 `GuildParamCfg`。发出后核对本城守军增长和个人联盟募兵令扣减。
+点「前往」可将舰队调往本盟城池，包括正在受攻的城池。高级募兵使用 `CityRecruitDefenceRequest`，资格取自 `VipLevelCfg`，每枚令牌的增兵数取自 `GuildParamCfg`。发出后核对本城守军增长和个人联盟募兵令扣减。
 
 设置联盟集结使用 `SetAssembleCityRequest`，回读 `WarDeclarationResponse.assembleCityId`。可在本盟已宣战或正在受攻的非主城间切换。撤销宣战使用 `CancelDeclareWarRequest`，本盟至少保留一个进攻目标，费用取自 `WorldParamCfg` 的「取消宣战消耗」。原宣战期内目标消失、城池归属相符且个人钻石扣减符合报价后才确认。
 

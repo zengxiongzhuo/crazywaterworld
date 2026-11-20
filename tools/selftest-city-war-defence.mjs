@@ -20,7 +20,7 @@ const check = async (name, action) => {
 };
 const read = (f, settings) => readCityWar(f.client, f.protocol, f.config, f.player, settings.cityWar, { mapLoader: f.mapLoader });
 const plan = async (f, settings, usage = ledger()) => planCityWar(await read(f, settings), settings, {
-  usage: usage.snapshot(), keys: usage.keyRecords(), pendingPetrol: usage.pendingCounters().cityWarPetrol ?? 0,
+  keys: usage.keyRecords(), pendingPetrol: usage.pendingCounters().cityWarPetrol ?? 0,
 });
 const run = (f, settings, usage = ledger(), options = {}) => runCityWar(f.client, f.protocol, f.config, f.player, {
   getSettings: () => settings, ledger: usage, mapLoader: f.mapLoader, ...options,
@@ -172,6 +172,7 @@ await check('人数未知时只阻止本队的人数优先策略，同目标其�
   const { f, settings } = multipleTargetsFixture();
   settings.cityWar.defenceFleetIds = [];
   f.state.war.declarations.push({ attackGuildIdx: 9, defenceGuildIdx: 8, cityId: 2 });
+  f.state.cities.find(city => city.id === 2).attackFleetNum = 1;
   settings.cityWar.fleetStrategies = {
     '1远征船': independentStrategy({ targetMode: 'selected', cityRefs: ['1:2'], targetPriority: 'original' }),
     '2远征船': independentStrategy({ targetMode: 'selected', cityRefs: ['1:2'], targetPriority: 'fewestAllied' }),
@@ -275,7 +276,7 @@ await check('一队进攻二队防守分别派往对应城市，回读确认并�
   assert.equal(f.client.writes.length, 2, '在途舰队不可重复派遣');
 });
 
-await check('纯防守在零汽油时可派遣，仍计入每日出征上限', async () => {
+await check('零汽油防守可在超过旧出征上限后继续派遣并计数', async () => {
   const { f, settings } = defenceFixture(), usage = ledger();
   onlyDefence(settings); f.state.fuel = 0; settings.cityWar.dailyDispatchLimit = 1;
   const result = await run(f, settings, usage);
@@ -285,8 +286,9 @@ await check('纯防守在零汽油时可派遣，仍计入每日出征上限', a
   assert.equal(usage.snapshot().counters.cityWarPetrol ?? 0, 0);
   assert.equal(usage.snapshot().counters.cityWarDispatches, 1);
   f.returnFleet('2远征船');
-  await run(f, settings, usage);
-  assert.equal(f.client.writes.length, 1, '免费防守仍受次数上限约束');
+  assert.equal((await run(f, settings, usage)).results[0]?.status, 'confirmed');
+  assert.equal(f.client.writes.length, 2);
+  assert.equal(usage.snapshot().counters.cityWarDispatches, 2);
 });
 
 await check('防守只认当前受宣战且仍属本盟的城市，不接管其他联盟防守', async () => {
@@ -394,6 +396,7 @@ await check('攻守独立按各自名单顺序或队数距离排序', async () =
 await check('人数未知按各自攻守优先策略处理并继续预留对应舰队', async () => {
   const { f, settings } = defenceFixture();
   f.state.war.declarations.push({ attackGuildIdx: 9, defenceGuildIdx: 8, cityId: 2 });
+  f.state.cities.find(city => city.id === 2).attackFleetNum = 1;
   f.state.cities.find(city => city.id === 3).battlePoints = [
     { index: 0, leftFighter: fighter(8), rightFighter: fighter(9) },
   ];

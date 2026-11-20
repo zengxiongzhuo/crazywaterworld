@@ -107,6 +107,19 @@ export function confirmPetSpend(before, after, request, body) {
       > before.mature.filter(pet => pet.petId === body.petId).length + before.jobs.filter(job => job.petId === body.petId).length);
 }
 
+export function petAdvanceFeedCount(pet) {
+  if (!Array.isArray(pet.profFeed ?? [])) return null;
+  let fed = 0;
+  for (const prof of pet.profFeed ?? []) {
+    if (!Array.isArray(prof?.attrFeed)) return null;
+    for (const attr of prof.attrFeed) {
+      if (!integer(attr?.times)) return null;
+      fed += attr.times;
+    }
+  }
+  return Number.isSafeInteger(fed) ? fed : null;
+}
+
 // Keep immutable pre-action evidence, never a connection or settings closure.
 // A replacement connection can therefore finish the same read-only check.
 export async function captureSpendOperation(client, step, { waterSnapshot } = {}) {
@@ -124,12 +137,8 @@ export async function captureSpendOperation(client, step, { waterSnapshot } = {}
       if (!unique(pets, pet => pet.uid)) return false;
       const pet = pets.find(row => String(row.uid) === verify.petUid);
       if (!pet || !integer(pet.grade ?? 0) || !Array.isArray(pet.profFeed)) return false;
-      let fed = 0;
-      for (const prof of pet.profFeed) {
-        if (!Array.isArray(prof.attrFeed) || prof.attrFeed.some(attr => !integer(attr.times))) return false;
-        fed += prof.attrFeed.reduce((sum, attr) => sum + attr.times, 0);
-      }
-      return fed > verify.fed || (pet.grade ?? 0) > verify.grade;
+      const fed = petAdvanceFeedCount(pet);
+      return fed !== null && (fed > verify.fed || (pet.grade ?? 0) > verify.grade);
     });
   }
   if (['MuseumSpeedUpExploreRequest', 'MuseumUpgradeExhibitionRequest', 'MuseumUpgradeKeywordRequest'].includes(request)) {

@@ -13,10 +13,6 @@ function Panel({title, help, titleAfter, children}: {title: string; help?: strin
   return <Card><CardHeader><CardTitle className="title-with-help">{title}{help && <HelpTip title={title}>{help}</HelpTip>}</CardTitle>{titleAfter && <CardAction className="row-span-1 self-center max-md:col-span-2 max-md:col-start-1 max-md:row-start-2 max-md:justify-self-start">{titleAfter}</CardAction>}</CardHeader><CardContent>{children}</CardContent></Card>
 }
 
-function Option({id, label, checked = false}: {id: string; label: string; checked?: boolean}) {
-  return <div className="bar"><Switch id={id} data-local-switch="" defaultChecked={checked} className="p-0" /><label htmlFor={id}>{label}</label></div>
-}
-
 export function resultsPage() {
   return renderToStaticMarkup(<div className="results-page grid gap-3">
     <Panel title="挂机成果" titleAfter={<Button id="results-refresh" variant="outline" size="sm">刷新成果</Button>}>
@@ -89,8 +85,9 @@ export function overviewPage() {
       <p id="overview-task-summary" className="dim" role="status">等待读取运行状态</p>
       <div id="overview-task-groups" />
     </Panel>
-    <Panel title="世界概览" help="点城池可派遣空闲舰队驻防、增援或进攻。募兵、集结和宣战按当前角色与城池条件开放。行军位置按已同步的起终点和时间推算。地图刷新间隔可设为 5–300 秒。" titleAfter={<div className="world-refresh-controls"><Button id="world-map-auto-refresh" size="sm" variant="outline" aria-pressed="true">自动刷新：开</Button><label className="world-refresh-setting">每<input id="world-map-refresh-seconds" aria-label="世界概览刷新秒数" type="number" min="5" max="300" step="1" defaultValue="10" />秒</label></div>}>
+    <Panel title="世界概览" help="点击城池可查看攻守队列、驻防和可用操作。地图刷新间隔可设为 5–300 秒。" titleAfter={<div className="world-refresh-controls"><Button id="world-map-auto-refresh" size="sm" variant="outline" aria-pressed="true">自动刷新：开</Button><label className="world-refresh-setting">每<input id="world-map-refresh-seconds" aria-label="世界概览刷新秒数" type="number" min="5" max="300" step="1" defaultValue="10" />秒</label></div>}>
       <div id="world-map-fleets" className="fleet-summary" aria-label="我的舰队" />
+      <p id="world-fleet-speed-feedback" className="dim" role="status" hidden />
       <details className="world-map-stats"><summary>城战与货轮详情</summary><div id="world-map-wars" /><div id="world-map-treasures" /></details>
       <details className="world-map-stats"><summary>汽油用量</summary><div id="world-map-resources" /></details>
       <div className="bar world-map-toolbar"><Button id="world-map-refresh" variant="outline" size="sm">刷新地图</Button><Button id="world-map-pan" variant="outline" size="sm" aria-pressed="false">移动地图</Button><Button id="world-map-reset" variant="outline" size="sm">全图</Button><Button id="world-map-home" variant="outline" size="sm">定位舰队</Button><label htmlFor="world-map-zoom">缩放</label><input id="world-map-zoom" type="range" min="1" max="8" step="0.25" defaultValue="1" /><span id="world-map-time" role="status">尚未读取</span></div>
@@ -99,36 +96,38 @@ export function overviewPage() {
         <div id="world-map-scroll" className="world-map-scroll"><svg id="world-map" role="group" aria-label="世界地图" /></div>
         <dialog id="world-map-detail" className="world-map-detail" aria-labelledby="world-map-target-name" hidden>
           <div className="world-map-detail-heading"><strong id="world-map-target-name" /><Button id="world-map-detail-close" variant="ghost" size="sm" aria-label="关闭地图详情"><X aria-hidden="true" size={16} /></Button></div>
-          <div id="world-map-city-actions" className="world-city-actions" hidden />
           <div id="world-map-target-facts" />
+          <div id="world-map-city-actions" className="world-city-actions" hidden />
         </dialog>
-      </div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help"><span className="for-mouse">拖动平移 · Ctrl+滚轮缩放 · 悬停查看城池操作，点击固定</span><span className="for-touch">点城池操作 · 点「移动地图」后可单指拖动</span></p></div>
+      </div><div id="world-map-legend" className="world-map-legend" /><div id="world-map-state-legend" className="world-map-state-legend" /><p className="world-map-help"><span className="for-mouse">点击城池查看详情 · 拖动平移 · Ctrl+滚轮缩放</span><span className="for-touch">轻点城池查看详情 · 点「移动地图」后可单指拖动</span></p></div>
       <p id="world-map-notes" className="dim" />
     </Panel>
-    <Panel title="资源田概览" help="按资源类型查看已占数量与有效基础产量，展开查看明细。管理弹窗展示所有已占田，可逐块替换或放弃，也可选择新田占领。" titleAfter={<div className="bar"><a className="inline-link" href="#config-group-resourceFields">资源田配置</a><Button id="resource-fields-refresh" variant="outline" size="sm" disabled>刷新资源田</Button></div>}>
+    <Panel title="资源田概览" help="点击卡片查看该类已占田，点「占领」或「换田」查看候选地块。要换田，先在新地块所在行点「替换」，再选择已有地块。" titleAfter={<div className="bar"><a className="inline-link" href="#config-group-resourceFields">资源田配置</a><Button id="resource-fields-refresh" variant="outline" size="sm" disabled>刷新资源田</Button></div>}>
       <section id="resource-fields-overview" aria-label="资源田概览">
         <div className="resource-fields-toolbar"><span id="resource-fields-capacity">连接账号后读取资源田</span><span id="resource-fields-automatic" className="dim" /></div>
         <p id="resource-fields-feedback" className="resource-fields-feedback" role="status" hidden />
         <div id="resource-fields-summary" className="resource-fields-summary" />
-        <details className="resource-fields-help"><summary>同步状态与玩法说明</summary><p id="resource-fields-status" className="dim" role="status">连接账号后读取资源田</p><p className="dim">总览可见时每 60 秒刷新。</p><p id="resource-fields-notes" className="dim" /><div id="resource-fields-pending" className="resource-fields-list" /><p>资源田产出汽油、种子或科技点，城市失守会暂停产出。上方为当前有效田地的基础小时产量，不含加成。</p><p>占领需要目标城市为本盟、本人尚未占领、有名额及足够汽油，并派出可用舰队。推荐战力仅供参考，派遣后仍需行军和战斗。</p><p>替换会先放弃旧田，再派舰队占领新田。新田战败或中途失败不会自动恢复旧田。开启自动占领后，每次检查都会优先寻找可占的高级田，按资源名额补位或替换低级田。</p></details>
       </section>
       <dialog id="resource-fields-action-dialog" aria-labelledby="resource-fields-action-title">
-        <DialogHeader className="flex-row items-center justify-between"><DialogTitle id="resource-fields-action-title">管理资源田</DialogTitle><Button id="resource-fields-dialog-close" variant="outline" size="sm" aria-label="关闭资源田管理">关闭</Button></DialogHeader>
+        <DialogHeader className="flex-row items-center justify-between">
+          <div className="resource-fields-dialog-heading">
+            <DialogTitle id="resource-fields-action-title">管理资源田</DialogTitle>
+            <span id="resource-fields-owned-hint" className="dim" hidden />
+            <span id="resource-fields-candidate-count" className="dim" hidden />
+            <span id="resource-fields-candidate-fuel" className="dim" hidden />
+          </div>
+          <Button id="resource-fields-dialog-close" variant="outline" size="sm" aria-label="关闭资源田弹窗">关闭</Button>
+        </DialogHeader>
         <div id="resource-fields-manager">
-          <div className="resource-fields-table-heading"><h3>已占资源田</h3><span className="dim">包含所有资源类型，可逐块替换或放弃</span></div>
-          <div className="resource-fields-table-scroll" role="region" aria-label="已占资源田表格，可横向滚动" tabIndex={0}><table className="resource-fields-table"><thead><tr><th scope="col">资源</th><th scope="col">田地 / 等级</th><th scope="col">城市 / 格子</th><th scope="col">有效时产</th><th scope="col">状态</th><th scope="col">操作</th></tr></thead><tbody id="resource-fields-owned-table" /></table></div>
-          <p className="resource-fields-table-hint dim">左右滑动查看位置、产量与状态，操作按钮保持可见。</p>
-          <div className="resource-fields-pagination"><Button id="resource-fields-owned-prev" variant="outline" size="sm">上一页</Button><span id="resource-fields-owned-page" className="dim" /><Button id="resource-fields-owned-next" variant="outline" size="sm">下一页</Button></div>
-          <div id="resource-fields-replace-bar" className="resource-fields-replace-bar" hidden><div><strong>正在选择替换目标</strong><p id="resource-fields-replace-note" /></div><Button id="resource-fields-replace-cancel" variant="outline" size="sm">取消替换</Button></div>
-          <div className="resource-fields-table-heading"><h3>可占资源田</h3><span className="dim">未选旧田时为新增占领</span></div>
-          <div className="resource-fields-filters"><label htmlFor="resource-fields-resource">候选资源<select id="resource-fields-resource" defaultValue=""><option value="">全部资源</option><option value="汽油">汽油</option><option value="种子">种子</option><option value="公会科技点">科技点</option></select></label><label htmlFor="resource-fields-level">最低等级<input id="resource-fields-level" type="number" min="1" max="100" step="1" defaultValue="1" /></label><span className="dim">筛选仅影响下方候选表</span></div>
-          <p id="resource-fields-candidate-count" className="dim" role="status" />
-          <div className="resource-fields-table-scroll" role="region" aria-label="可占资源田表格，可横向滚动" tabIndex={0}><table className="resource-fields-table"><thead><tr><th scope="col">资源</th><th scope="col">田地 / 等级</th><th scope="col">城市 / 格子</th><th scope="col">基础时产</th><th scope="col">推荐战力</th><th scope="col">操作</th></tr></thead><tbody id="resource-fields-candidates" /></table></div>
-          <p className="resource-fields-table-hint dim">左右滑动查看位置、产量与推荐战力。</p>
-          <div className="resource-fields-pagination"><Button id="resource-fields-page-prev" variant="outline" size="sm">上一页</Button><span id="resource-fields-page-state" className="dim" /><Button id="resource-fields-page-next" variant="outline" size="sm">下一页</Button></div>
+          <section id="resource-fields-owned" aria-labelledby="resource-fields-action-title" hidden>
+            <div className="resource-fields-table-scroll" role="region" aria-label="已占资源田表格" tabIndex={0}><table className="resource-fields-table resource-fields-owned-table"><thead><tr><th scope="col">地块</th><th scope="col">等级</th><th scope="col">有效时产</th><th scope="col">操作</th></tr></thead><tbody id="resource-fields-owned-table" /></table></div>
+          </section>
+          <section id="resource-fields-targets" aria-labelledby="resource-fields-action-title">
+            <div className="resource-fields-table-scroll" role="region" aria-label="可占资源田表格" tabIndex={0}><table className="resource-fields-table resource-fields-candidate-table"><thead><tr><th scope="col">田地 / 等级</th><th scope="col">基础时产</th><th scope="col">推荐战力</th><th scope="col">操作</th></tr></thead><tbody id="resource-fields-candidates" /></table></div>
+          </section>
         </div>
         <div id="resource-fields-action-body" hidden />
-        <DialogFooter><Button id="resource-fields-action-back" variant="outline" hidden>返回选田</Button><Button id="resource-fields-action-confirm" disabled hidden>确认派遣</Button><Button id="resource-fields-action-cancel" variant="outline">关闭</Button></DialogFooter>
+        <DialogFooter><Button id="resource-fields-action-back" variant="outline" hidden>返回选田</Button><Button id="resource-fields-action-confirm" disabled hidden>确认派遣</Button></DialogFooter>
       </dialog>
     </Panel>
     <Panel title="硅矿概览" help="空矿位的详情浮层可选择舰队采集；自己的采矿舰队首奖后可撤回。单次派遣与撤回不会改变自动配置。自动刷新仅影响此概览；鼠标悬停、键盘聚焦或手机轻触矿位查看详情。奖励由服务器自动发放，倒计时结束后需同步确认。" titleAfter={<div className="bar"><a className="inline-link" href="#config-group-silicon">硅矿配置</a><Button id="silicon-refresh" variant="outline" size="sm" disabled>刷新硅矿</Button></div>}>
@@ -171,23 +170,15 @@ export function activitiesPage() {
 
 export function manualPage() {
   return renderToStaticMarkup(<div className="grid gap-3">
-    <Panel title="海面" help="收成品 → 竣工 → 交单 → 按订单缺口排产 → 余料升级建筑。本轮是否允许使用加速器、拒单重刷，由下方本次开关决定。">
-    <div className="bar">
-      <Option id="world-speedup" label="本轮允许花加速器" />
-      <Option id="world-reroll" label="本轮拒单重刷" />
-      <Button id="world-plan" variant="outline">刷新数据</Button>
-      <Button id="world-run" variant="default">执行一轮</Button>
-      <span id="world-hint" className="warn"></span>
-    </div>
-    <div id="world-view" role="status" />
-    <div id="world-factories"></div>
-    <div id="world-orders"></div>
+    <Panel title="海面" help="打开建筑一览时会读取工厂、农田和居民订单。点击工厂的「查看排产」可查看各生产格的情况。">
+      <div id="world-view" role="status" />
+      <div id="world-factories"></div>
+      <div id="world-orders"></div>
     </Panel>
     <Panel title="需求联合排产" help="按用户配置的需求优先级逐级优化齐套时间，上游材料继承对应优先级。共享原料和生产位统一安排，独立设施并行生产。结果显示分层工期、投料顺序、时长依据和阻塞原因。">
       <div className="bar"><Button id="production-plan-refresh" variant="outline">计算联合排产</Button><span id="production-plan-status" className="dim" role="status">连接后可计算</span></div>
       <div id="production-plan-result" aria-live="polite" />
     </Panel>
-    <Panel title="资源田"><div id="world-fields" /></Panel>
   </div>)
 }
 

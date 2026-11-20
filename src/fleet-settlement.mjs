@@ -186,7 +186,7 @@ export function cancelResourceFieldReplacement(ledger, key, record, now, reason)
 // 对已有派遣做结算，不发出游戏动作。先按读回前的记录编号限定范围，防止迟到快照释放新占用。
 export function settleFleetSnapshot(
   ledger,
-  { worldId, fleets, events, reports, kills, cargoUids, resourceFields, now, kinds, baseline, allowBossTimeout = true }
+  { worldId, fleets, events, reports, kills, cargoUids, resourceFields, now, readStartedAt, kinds, baseline, allowBossTimeout = true }
 ) {
   if (!ledger?.keyRecords || !worldId || !Array.isArray(fleets)) return [];
   const records = ledger.keyRecords(),
@@ -272,6 +272,14 @@ export function settleFleetSnapshot(
         // 同一事件退回待处理、原舰队已经返航，也是这一次派遣的终态。
         const reason = !event ? '事件已离开列表' : event.state === 4 ? '情报可领奖' : '情报已退回待处理';
         ledger.updateKeyDetails(key, { ...d, active: false, releaseReason: reason });
+        changes.push({ key, reason });
+      } else if (!r.confirmed && home && !fleet.targetGridIdx && !fleet.targetCityId &&
+        !fleet.repairing && !fleet.autoFight?.isOn && (!event || (event.state === 1 && !event.startTime))) {
+        // 旧账本也保存了本机预留时间。给迟到的派遣回报留出与首杀相同的等待窗口。
+        const reservedAt = ledger.reservationTime?.(key);
+        if (!integer(readStartedAt) || !integer(reservedAt) || reservedAt <= 0 || readStartedAt - reservedAt < 15 * 60_000) continue;
+        const reason = '情报派遣已等待15分钟，舰队在主城，原情报未在执行，汽油仍待核对';
+        ledger.resolveKey(key, false, { ...d, active: false, releaseReason: reason });
         changes.push({ key, reason });
       }
       continue;
@@ -487,6 +495,7 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
         return null;
       }
     };
+    const readStartedAt = Date.now();
     const [own, radar, pirate, cargo, fields] = await Promise.all([
       read('MyFleets'),
       kinds.has('radarSend') ? read('RadarInfo') : null,
@@ -505,6 +514,7 @@ export async function checkFleetSettlement(client, player, ledger, { afterPush =
       : null;
     const snapshot = {
       worldId,
+      readStartedAt,
       fleets: own.fleets,
       events: radarEvents(radar?.radarInfo),
       kills: pirate?.records,

@@ -365,6 +365,9 @@ export async function surveyWorld(client, protocol, { config = null, player = nu
     serverNow: serverClock(),
     player,
     stock,
+    stockKnown,
+    resourceStockKnown: Array.isArray(resourceList?.list) && resourceList.list.every(entry =>
+      Number.isSafeInteger(entry?.res) && Number.isSafeInteger(entry.amount) && entry.amount >= 0),
     have,
     buildings,
     factories,

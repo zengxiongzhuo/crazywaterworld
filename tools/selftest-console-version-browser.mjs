@@ -108,6 +108,13 @@ try {
   await warning.getByRole('button', { name: '返回页面' }).click();
   await warning.waitFor({ state: 'hidden' });
   assert(await reopen.evaluate(button => button === document.activeElement), '手动打开后关闭应回到触发按钮');
+  const [leavePrompt] = await Promise.all([
+    page.waitForEvent('dialog', { timeout: 5000 }),
+    page.evaluate(() => { setTimeout(() => location.reload(), 0); }),
+  ]);
+  assert.equal(leavePrompt.type(), 'beforeunload', '返回页面后手动刷新应提醒保留草稿');
+  await leavePrompt.dismiss();
+  assert.equal(await budget.inputValue(), '1234', '取消手动刷新后可以继续查看旧草稿');
   await reopen.click();
   await page.waitForTimeout(1600);
   assert.equal(writes.length, offlineWrites, '轮询发现版本变化后不能自动重发旧草稿');
@@ -166,10 +173,12 @@ try {
   assert(entryBox && entryBox.x >= 0 && entryBox.x + entryBox.width <= 360, '手机页头可见过期提示入口');
   await reopen.click();
   await page.setViewportSize({ width: 1280, height: 900 });
-  let refreshConfirmed = false;
-  page.once('dialog', async dialog => { assert.match(dialog.message(), /保留.*刷新/); refreshConfirmed = true; await dialog.accept(); });
+  const refreshPrompts = [];
+  const recordPrompt = async dialog => { refreshPrompts.push(dialog.type()); await dialog.accept(); };
+  page.on('dialog', recordPrompt);
   await Promise.all([page.waitForNavigation(), warning.getByRole('button', { name: '刷新页面', exact: true }).click()]);
-  assert.equal(refreshConfirmed, true, '刷新前应提醒保留未保存内容');
+  page.off('dialog', recordPrompt);
+  assert.deepEqual(refreshPrompts, [], '在过期弹窗点击刷新应直接加载新版');
   await openSettings();
   const newVersion = await page.evaluate(() => window.cwConsoleVersion.version);
   assert.notEqual(newVersion, oldVersion); assert.equal(newVersion, blocked[0].version);
@@ -185,7 +194,7 @@ try {
   const saved = loadAutomationSettings(id); assert.equal(saved.settings.resources.diamondDailyLimit, 2345);
   assert.equal(saved.revision, initialRevision + 1);
   assert.equal(connections, 0); assert.deepEqual(errors, []);
-  console.log('通过：确认刷新后携带新版本正常保存，全程零游戏连接');
+  console.log('通过：手动刷新提示保留草稿，弹窗内一键刷新后携带新版本正常保存，全程零游戏连接');
   await context.close();
 } finally {
   await browser?.close(); await close();

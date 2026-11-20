@@ -1,9 +1,11 @@
-import { createHash } from 'node:crypto';
 import { exactAutomationId } from './automation-policy.mjs';
 import { rewardData } from './missing-rewards.mjs';
 import { recordsInWorld, settleFleetSnapshot } from './fleet-settlement.mjs';
-import { fleetSpeedConfirmed, sameFleetSpeedOperation, repairDiamondCost, fleetCargoId } from './fleet-speed-evidence.mjs';
+import { fleetSpeedConfirmed, sameFleetSpeedOperation, repairDiamondCost, fleetCargoId, fleetSpeedOperationId } from './fleet-speed-evidence.mjs';
 import { watchFleetRepairPricing, conservativeRepairMinutes } from './fleet-repair-pricing.mjs';
+import { fleetSpeedEnabled } from './fleet-speed-settings.mjs';
+
+export { fleetSpeedEnabled };
 
 const valid = (n, min = 0) => Number.isSafeInteger(n) && n >= min;
 const nowOf = c => Math.floor((Date.now() + (c.serverClockOffsetMs || 0))/1000);
@@ -11,7 +13,6 @@ const dayOf = n => Math.floor((n+28800)/86400);
 const active = new WeakSet(), watchers = new WeakMap();
 const identity = p => [exactAutomationId(p?.worldId), exactAutomationId(p?.playerId)].join(':');
 const fleetData = fleet => ({...rewardData(fleet),treasureLootUid:fleetCargoId(fleet)});
-export const fleetSpeedEnabled = s => !!s?.cityWar?.enabled && !!s?.fleetSpeed?.enabled;
 
 // 仅短等一个计费边界；不会为了省钻无限推迟。行军固定收费，只在临近目标时等自然到达。
 export function fleetSpeedWait(policy, mode, remaining) {
@@ -87,7 +88,6 @@ export async function readFleetSpeed(client, player) {
 export function planFleetSpeed(snapshot, config, settings, ledger) {
   const plan = { actions:[], notes:[], rows:[], waits:[] };
   if (!settings?.cityWar?.enabled) { plan.notes.push('联盟城战未开启，维修及派遣钻石加速暂停'); return plan; }
-  if (!settings?.fleetSpeed?.enabled) { plan.notes.push('维修及派遣钻石加速总开关已关闭；逐队开关开启也不会加速'); return plan; }
   if (!snapshot.worldId || !snapshot.playerId) { plan.notes.push('角色或区服未确认'); return plan; }
   const keys = recordsInWorld(ledger.keyRecords(),snapshot.worldId), usage = {...ledger.snapshot().counters};
   if(Object.values(keys).some(r=>r.confirmed && r.details?.kind==='fleetSpeed' && !r.details.balanceObserved &&
@@ -115,7 +115,7 @@ export function planFleetSpeed(snapshot, config, settings, ledger) {
     row.remaining = remaining;
     if (!valid(skip) || remaining <= skip) { block('剩余时间不超过 '+skip+' 秒，不加速'); continue; }
     const cargo = fleetCargoId(fleet);
-    const operation = createHash('sha256').update(JSON.stringify([mode,start,target,cargo])).digest('hex').slice(0,20);
+    const operation = fleetSpeedOperationId(mode,start,target,cargo);
     const wait = planSpeedWait(plan,keys,snapshot,policy,mode,operation,remaining);
     if (wait) {
       row.waitSeconds=wait;

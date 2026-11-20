@@ -208,10 +208,7 @@ export async function readResourceFieldState(client, protocol, config, player, o
 
 export async function readResourceFieldsOverview(...args) {
   const { rawFleets, worldId, ...view } = await readResourceFieldState(...args);
-  // Keep each resource represented while bounding a large map's payload.
-  const counts = new Map();
   view.candidateCount = view.candidates.length;
-  view.candidates = view.candidates.filter(row => { const n = counts.get(row.resourceId) ?? 0; counts.set(row.resourceId, n + 1); return n < 60; });
   return view;
 }
 

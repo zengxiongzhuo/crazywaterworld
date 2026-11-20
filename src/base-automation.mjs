@@ -1,7 +1,7 @@
 import { cleanupAfterClaim } from './claim-cleanup.mjs';
 import { collectAntiqueFloaters } from './antique-floaters.mjs';
 import { normalize } from './worlds.mjs';
-import { displayMaterial } from './config.mjs';
+import { displayMaterial, RESOURCE } from './config.mjs';
 import { budgetPreview, createActionGuard, resourceReserve, exactAutomationId, automationWireId, nativePreferenceEnabled, AutomationSkip } from './automation-policy.mjs';
 import { serviceBoats } from './boats.mjs';
 import { serviceCargo } from './cargo.mjs';
@@ -9,7 +9,7 @@ import { collectFloaters } from './collections.mjs';
 import { fishOnce } from './fishing.mjs';
 import { upgradeFishingOnce } from './fishing-upgrade.mjs';
 import { readOrderReservedStock } from './order-reservations.mjs';
-import { petSpendSnapshot, confirmPetSpend } from './spend-evidence.mjs';
+import { petSpendSnapshot, confirmPetSpend, petAdvanceFeedCount } from './spend-evidence.mjs';
 import { goldAccountKey } from './gold-reservations.mjs';
 import { readAllianceRecruitDemand } from './alliance-automation.mjs';
 import { readGuildShips, guildShipDemands } from './guild-ships.mjs';
@@ -19,6 +19,7 @@ import { museumExploreFactor, selectMuseumHeroes } from './museum-exploration.mj
 const rows = (config, name) => config?.tables?.[name]?.data ?? [];
 const quantities = list => (list ?? []).map(item => Array.isArray(item) ? { id: item[0], num: Number(item[1]) } : { id: item.id, num: Number(item.num) });
 const validCosts = list => Array.isArray(list) && list.length > 0 && list.every(item => typeof item.id === 'string' && Number.isSafeInteger(item.num) && item.num > 0);
+const resourceIds = new Set(Object.values(RESOURCE));
 const stateByClient = new WeakMap();
 function addBaseNote(notes, notesBySetting, setting, text) {
   notes.push(text);
@@ -208,8 +209,18 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
     return true;
   };
   if (settings.loop.world) {
-    planMuseum();
-    planPets();
+    const priorities = settings.factory.demandPriority;
+    if (settings.pet.enabled && settings.pet.advance && settings.factory.enabled && settings.factory.demandFirst && priorities.includes('petAdvance')) {
+      const priority = source => priorities.includes(source) ? priorities.indexOf(source) : priorities.length;
+      const plans = [['museum', planMuseum], ['petFeed', planQueuedPetFeeds], ['petAdvance', planPetAdvance]];
+      plans.sort(([a], [b]) => priority(a) - priority(b));
+      for (const [, plan] of plans) plan();
+      planPets(false);
+    } else {
+      planMuseum();
+      planPets();
+      planPetAdvance();
+    }
     if (settings.events.enabled) {
       if (!snapshot.choiceObserved) note('events.enabled', '随机事件：尚未收到本次连接的事件状态');
       for (const event of snapshot.choices) {
@@ -353,7 +364,19 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
     }
   }
 
-  function planPets() {
+  function planRoomFeeds(room) {
+    for (const job of room.petBreed.breedQ) {
+      const costs = quantities(job.feedRequirements);
+      if (job.finishTime > now && validCosts(costs)) add({ kind: 'petFeed', setting: 'pet.feed', request: 'PetFeedRequest', response: null, body: { jobIdx: job.idx }, costs, verify: { finishTime: job.finishTime }, label: `喂养培育队列 ${job.idx}` });
+    }
+  }
+
+  function planQueuedPetFeeds() {
+    if (!settings.pet.feed) return;
+    for (const room of petRooms(world.buildings, config)) if (petQueue(room, config)) planRoomFeeds(room);
+  }
+
+  function planPets(includeFeed = true) {
     const pref = settings.pet;
     if (!pref.enabled) return;
     const rooms = petRooms(world.buildings, config);
@@ -369,10 +392,7 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
       if (!queue) { note('pet', '海兽培育：队列状态或容量未确认，等待下次检查'); continue; }
       if (pref.breed && queue.jobs >= queue.capacity) note('pet.breed', `海兽培育队列已满（${queue.jobs}/${queue.capacity}），等待完成并领取后再培育`);
       if (pref.claim && data.maturePets?.length && !claimPlanned) claimPlanned = add({ kind: 'petClaim', setting: 'pet.claim', request: 'GetMaturePetRequest', response: null, body: {}, verify: { matureBefore }, label: '领取已培育完成的海兽' });
-      if (pref.feed) for (const job of data.breedQ ?? []) {
-        const costs = quantities(job.feedRequirements);
-        if (job.finishTime > now && validCosts(costs)) add({ kind: 'petFeed', setting: 'pet.feed', request: 'PetFeedRequest', response: null, body: { jobIdx: job.idx }, costs, verify: { finishTime: job.finishTime }, label: `喂养培育队列 ${job.idx}` });
-      }
+      if (pref.feed && includeFeed) planRoomFeeds(room);
       if (pref.breed && pref.species.length && !breedPlanned && matureBefore === 0 && queue.jobs < queue.capacity) {
         if (!(season > 0)) { note('pet.breed', '海兽培育：无法确认当前赛季，本轮不开始培育'); continue; }
         const quality = ['BLUE', 'PURPLE', 'ORANGE', 'RED'];
@@ -398,19 +418,50 @@ export function planBaseAutomation(snapshot, config, settings, usage = {}, { div
         }
       }
     }
-    if (pref.advance) for (const b of world.buildings.filter(b => b.petServe?.petUid)) {
+  }
+
+  function planPetAdvance() {
+    if (!settings.pet.enabled || !settings.pet.advance) return;
+    const grades = rows(config, 'PetAdvancedCfg');
+    const maxGrade = Math.max(...grades.map(row => row.grade));
+    for (const b of world.buildings.filter(b => b.petServe?.petUid)) {
       const pet = snapshot.pets.find(p => String(p.uid) === String(b.petServe.petUid));
       if (!pet) continue;
       const required = rows(config, 'PetFeedAttrCfg').filter(row => row.level === (pet.grade ?? 0)).reduce((sum, row) => sum + (row.attrCounts ?? []).reduce((n, count) => n + count, 0), 0);
-      const fed = (pet.profFeed ?? []).reduce((sum, prof) => sum + (prof.attrFeed ?? []).reduce((n, attr) => n + attr.times, 0), 0);
-      const next = rows(config, 'PetAdvancedCfg').find(row => row.grade === (pet.grade ?? 0) + 1);
-      if (!next || !(required > 0)) continue;
-      if (fed >= required && pet.level >= next.level) add({ kind: 'petAdvance', setting: 'pet.advance', request: 'PetUpgradeRequest', response: null, body: { buildingId: b.buildingId }, verify: { petUid: String(pet.uid), grade: next.grade }, label: `海兽 ${pet.petId} 进阶至 ${next.grade} 阶` });
-      else if (fed < required) {
-        const costs = quantities(b.petServe.upgradeRequirements);
-        if (validCosts(costs)) add({ kind: 'petAdvanceFeed', setting: 'pet.advance', request: 'PetUpgradeFeedRequest', response: null, body: { buildingId: b.buildingId }, costs,
-          verify: { petUid: String(pet.uid), fed, grade: pet.grade ?? 0 }, label: `海兽 ${pet.petId} 投喂进阶材料` });
-      } else note('pet.advance', `海兽 ${pet.petId} 进阶需要等级 ${next.level}`);
+      const fed = petAdvanceFeedCount(pet);
+      const grade = pet.grade ?? 0;
+      const next = grades.find(row => row.grade === grade + 1);
+      if ((!next && grade !== maxGrade) || !(required > 0) || fed === null) continue;
+      if (fed >= required) {
+        if (!next) continue;
+        if (pet.level >= next.level) add({ kind: 'petAdvance', setting: 'pet.advance', request: 'PetUpgradeRequest', response: null, body: { buildingId: b.buildingId }, verify: { petUid: String(pet.uid), grade: next.grade }, label: `海兽 ${pet.petId} 进阶至 ${next.grade} 阶` });
+        else note('pet.advance', `海兽 ${pet.petId} 进阶需要等级 ${next.level}`);
+        continue;
+      }
+      const items = quantities(b.petServe.upgradeRequirements);
+      if (!validCosts(items)) continue;
+      const label = `海兽 ${pet.petId} 投喂进阶材料`;
+      if (items.some(({ id }) => (resourceIds.has(id) ? world.resourceStockKnown : world.stockKnown) === false)) {
+        note('pet.advance', `${label}：未能读取完整库存，等待重新检查`);
+        continue;
+      }
+      const totals = new Map();
+      for (const { id, num } of items) totals.set(id, (totals.get(id) ?? 0) + num);
+      const costs = [...totals].map(([id, num]) => ({ id, num }));
+      const missing = costs.filter(item => free(item.id) < item.num);
+      if (missing.length) {
+        const details = missing.map(({ id, num }) => {
+          const stock = world.stock.get(id) ?? 0, used = stock - (working.get(id) ?? 0);
+          const keep = resourceReserve(settings, id);
+          const name = displayMaterial(config, id);
+          return `${name === '未知材料' ? id : name}需要 ${num}，库存 ${stock}` +
+            (used ? `，本轮已安排 ${used}` : '') + (keep ? `，设置保留 ${keep}` : '') + `，可用 ${Math.max(0, free(id))}`;
+        });
+        note('pet.advance', `${label}：${details.join('；')}`);
+        continue;
+      }
+      add({ kind: 'petAdvanceFeed', setting: 'pet.advance', request: 'PetUpgradeFeedRequest', response: null, body: { buildingId: b.buildingId }, costs,
+        verify: { petUid: String(pet.uid), fed, grade }, label });
     }
   }
 }
@@ -592,7 +643,7 @@ export async function runBaseAutomation(client, protocol, config, plan, { player
         } else if (step.kind === 'petAdvance' || step.kind === 'petAdvanceFeed') {
           const after = normalizeBaseReply('AllPetRequest', await client.request('AllPetRequest', {}, 'AllPetResponse'));
           const pet = after.pets?.find(p => String(p.uid) === step.verify.petUid);
-          const fed = (pet?.profFeed ?? []).reduce((sum, prof) => sum + (prof.attrFeed ?? []).reduce((n, attr) => n + attr.times, 0), 0);
+          const fed = pet && petAdvanceFeedCount(pet);
           const confirmed = pet && (step.kind === 'petAdvance' ? pet.grade >= step.verify.grade : fed > step.verify.fed || pet.grade > step.verify.grade);
           if (!confirmed) throw new Error('服务器尚未确认海兽进阶进度');
           entry = { step, ok: true, body: { confirmed: true } };

@@ -54,6 +54,6 @@ export async function readWorldTarget(client,protocol,config,player,settings,led
  if(target&&!cityWarTargetSelected(settings.cityWar,target))view.notes.push('此城市不在已保存的'+(target.role==='defence'?'防守':'进攻')+'目标范围');
  if(target)view.notes.push('此城市为'+(target.role==='defence'?'本盟防守':'本盟进攻')+'目标，仅安排对应职责的舰队');
  state.targets=target?[target]:[];
- const plan=planCityWar(state,settings,{usage:ledger.snapshot(),keys:ledger.keyRecords(),pendingPetrol:pendingPetrol(ledger)});
+ const plan=planCityWar(state,settings,{keys:ledger.keyRecords(),pendingPetrol:pendingPetrol(ledger)});
  return {...view,...plan,notes:[...view.notes,...plan.notes],cost:target?.petrol??null};
 }

@@ -112,6 +112,53 @@ try {
     const p = await warPlan(f, s); assert.equal(p.targets.find(t => t.id === 3).alliedCount, null); assert.equal(p.actions[0].cityId, 2); assert.match(p.notes.join(' '), /多联盟/);
     f.state.cities[1].attackFleetNum = -1; const q = await warPlan(f, s); assert.equal(q.actions.length, 0); assert.match(q.notes.join(' '), /未确认/);
   });
+  await check('多盟同攻按完整排队明细和交战归属选城，明细不足或矛盾时等待', async () => {
+    const f = warFixture(), s = warForgeSettings(), city = f.state.cities[2];
+    f.state.war.declarations.push({ cityId: city.id, attackGuildIdx: 9, defenceGuildIdx: 8 });
+    Object.assign(s.cityWar, { targetMode: 'selected', cityRefs: ['1:3'] });
+    city.battlePoints = [7, 9, 7].map((guildIdx, index) => ({
+      index, leftFighter: { guildIdx, isNpc: index === 2 },
+    }));
+    const queued = (playerId, guildId) => ({ buildingId: '1远征船', state: 5, cityId: city.id, owner: { playerId, guildId } });
+    const allied = queued('9007199254746011', f.player.guildId);
+    const other = queued('9007199254746012', '9007199254741009');
+    const request = f.client.request;
+    let roster = [];
+    f.client.request = async (name, ...args) => {
+      const reply = await request(name, ...args);
+      if (name === 'WorldInfoRequest') {
+        const codec = f.protocol.WorldInfoResponse;
+        return codec.decode(codec.encode({ ...reply, fleets: [...reply.fleets, ...roster] }).finish());
+      }
+      return reply;
+    };
+    city.attackFleetNum = city.priorityAtkFleetNum = 0;
+    let plan = await warPlan(f, s);
+    assert.equal(plan.targets.find(t => t.id === city.id).alliedCount, 1);
+    assert.equal(plan.actions[0].cityId, city.id);
+    city.attackFleetNum = city.priorityAtkFleetNum = 1;
+    roster = [allied, other, allied, queued('33', '1008'), { ...queued('34', '1009'), treasureLootUid: 2 },
+      { ...queued('35', '1009'), chipWar: {} }, { ...queued('36', '1009'), cityId: 2, targetCityId: city.id }];
+    plan = await warPlan(f, s);
+    assert.equal(plan.targets.find(t => t.id === city.id).alliedCount, 2);
+    assert.equal(plan.actions[0].cityId, city.id);
+    for (const inconsistent of [
+      [allied, allied], [allied, other, queued('37', '1009')], [allied, { ...other, owner: null }],
+      [allied, other, { ...other, owner: { ...other.owner, guildId: f.player.guildId } }],
+      [allied, queued('38', '1010')],
+    ]) {
+      roster = inconsistent;
+      plan = await warPlan(f, s);
+      assert.equal(plan.targets.find(t => t.id === city.id).alliedCount, null);
+      assert.equal(plan.actions.length, 0);
+    }
+    roster = [allied, other];
+    let reads = 0;
+    f.beforeRead = name => { if (name === 'WorldInfoRequest' && ++reads === 2) roster = [other]; };
+    await runCityWar(f.client, f.protocol, f.config, f.player, { getSettings: () => s, ledger: ledger(), mapLoader: f.mapLoader });
+    assert.ok(reads >= 2);
+    assert.equal(f.client.writes.length, 0);
+  });
   await check('队数相近时就近，差10队以上选人少城，在途舰队计入总数', async () => {
     const f = warFixture(), s = warForgeSettings();
     Object.assign(f.state.cities[1], { attackFleetNum: 30, priorityAtkFleetNum: 0 });

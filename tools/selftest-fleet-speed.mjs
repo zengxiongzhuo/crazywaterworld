@@ -7,6 +7,7 @@ import { EventEmitter } from 'node:events';
 import { createDeclaredProtocol } from './fixtures/declared-protocol.mjs';
 import { defaultSettings, validateSettings, createUsageLedger, exportAutomationSettings, importAutomationSettings } from '../src/automation-settings.mjs';
 import { readFleetSpeed,planFleetSpeed,runFleetSpeed,watchFleetSpeed } from '../src/fleet-speed.mjs';
+import { fleetSpeedTarget, previewManualFleetSpeed, runManualFleetSpeed } from '../src/manual-fleet-speed.mjs';
 import { repairDiamondCost } from '../src/fleet-speed-evidence.mjs';
 import { watchFleetRepairPricing } from '../src/fleet-repair-pricing.mjs';
 import { watchSiliconMining } from '../src/silicon-mining.mjs';
@@ -25,7 +26,6 @@ function fixture(){
   const now=()=>Math.floor((Date.now()+client.serverClockOffsetMs)/1000);
   const player={worldId:1001001,playerId:900001};
   const settings=defaultSettings();settings.resources.allowDiamonds=true;settings.resources.diamondDailyLimit=1000;
-  settings.fleetSpeed.enabled=true;
   settings.cityWar.enabled=true;settings.cityWar.autoRepair=false;settings.cityWar.fleetIds=['1远征船','2远征船'];
   Object.assign(settings.fleetSpeed.fleets[0],{repair:true,march:true,repairSmartSave:true,marchSmartSave:true,repairDailyDiamonds:300,marchDailyDiamonds:300});
   const config={tables:{WorldParamCfg:{data:[{paramName:'行军加速消耗',paramValue:30}]},SpeedUpRubyCfg:{data:[{minute:0,fleet:10},{minute:60,fleet:11},{minute:80,fleet:20}]}}};
@@ -58,12 +58,79 @@ function fixture(){
   };
   f.run=(extra={})=>runFleetSpeed(client,protocol,config,player,{getSettings:()=>f.settings,ledger,enabled:()=>true,onStep:e=>f.entries.push(e),...extra});
   f.plan=async()=>planFleetSpeed(await readFleetSpeed(client,player),config,f.settings,ledger);
+  f.manualQuote=async(fleet)=>previewManualFleetSpeed(client,protocol,config,player,fleetSpeedTarget(fleet,player),{ledger});
+  f.manualRun=async(quote)=>runManualFleetSpeed(client,protocol,config,player,quote,{ledger,validate:()=>{}});
   f.repair=()=>Object.assign(state.fleets[0],{state:4,durability:80,repairing:{startTs:now()-10,endTs:now()+120,endDura:100}});
   return f;
 }
 try{
+await test('手动派遣加速逐次核对同一航程，直至指定舰队抵达',async()=>{
+  const f=fixture(), fleet=f.state.fleets[1];
+  const other=structuredClone(f.state.fleets[0]);
+  const quote=await f.manualQuote(fleet);
+  assert(quote.maxCost>=60);
+  f.beforeRead=name=>{
+    if(name==='MyFleetsRequest' && fleet.moveEndTs<=f.now()){
+      Object.assign(fleet,{state:1,curGridIdx:fleet.targetGridIdx,cityId:fleet.targetCityId});
+    }
+  };
+  assert.equal((await f.manualRun(quote)).status,'completed');
+  assert(f.writes.length>1);
+  assert.deepEqual(f.writes,Array(f.writes.length).fill({name:'SpeedUpFleetRequest',body:{buildingId:fleet.buildingId}}));
+  assert.equal(f.state.diamonds,1000-30*f.writes.length);
+  assert.deepEqual(f.state.fleets[0],other);
+  assert(1000-f.state.diamonds<=quote.maxCost);
+});
+await test('实际行军缩短少于预计时，手动加速在确认的费用上限停止',async()=>{
+  const f=fixture(),fleet=f.state.fleets[0];
+  fleet.moveEndTs=f.now()+32;
+  const quote=await f.manualQuote(fleet);
+  f.client.sendWatch=async(name,body)=>{
+    assert.equal(name,'SpeedUpFleetRequest');
+    assert.equal(body.buildingId,fleet.buildingId);
+    f.writes.push(body);
+    fleet.moveEndTs--;
+    f.state.diamonds-=30;
+  };
+  assert.equal((await f.manualRun(quote)).status,'partial');
+  assert.equal(30*f.writes.length,quote.maxCost);
+  assert.equal(f.state.diamonds,1000-quote.maxCost);
+});
+await test('手动维修一次补到目标耐久，报价期间换任务不能沿用旧确认',async()=>{
+  const f=fixture();f.repair();
+  const fleet=f.state.fleets[0],quote=await f.manualQuote(fleet);
+  fleet.repairing.startTs++;
+  const stale=await f.manualRun(quote).catch(()=>null);
+  assert.notEqual(stale?.status,'completed');
+  assert.equal(f.writes.length,0);
+  const fresh=await f.manualQuote(fleet);
+  assert.equal((await f.manualRun(fresh)).status,'completed');
+  assert.deepEqual(f.writes,[{name:'SpeedUpRepairRequest',body:{buildingId:fleet.buildingId,speedUp:{type:1,useNum:0}}}]);
+  assert.equal(fleet.durability,100);
+  assert.equal(fleetSpeedTarget(fleet,f.player),null);
+});
+await test('结果不明的手动行军加速保留扣费占用，重复点击不会再次消耗',async()=>{
+  const f=fixture(),quote=await f.manualQuote(f.state.fleets[1]);f.mode='unknown';
+  assert.equal((await f.manualRun(quote)).status,'unknown');
+  assert.equal(f.ledger.pendingCounters().diamonds,30);
+  const retry=await f.manualRun(quote).catch(()=>null);
+  assert.notEqual(retry?.status,'completed');
+  assert.equal(f.writes.length,1);
+});
+await test('同队更换了出发时间后，旧航程的加速不会继续发送到新航程',async()=>{
+  const f=fixture(), fleet=f.state.fleets[1];
+  const quote=await f.manualQuote(fleet);
+  f.beforeRead=name=>{
+    if(name==='MyFleetsRequest' && f.writes.length){
+      Object.assign(fleet,{moveStartTs:f.now(),moveEndTs:f.now()+600});
+    }
+  };
+  const result=await f.manualRun(quote).catch(()=>null);
+  assert.notEqual(result?.status,'completed');
+  assert.equal(f.writes.length,1);
+});
 await test('默认关闭、逐队逐项配置、严格校验和导入迁移',async()=>{
-  const s=defaultSettings();assert.equal(s.fleetSpeed.enabled,false);assert(!Object.hasOwn(s.fleetSpeed,'dailyDiamondLimit'));
+  const s=defaultSettings();assert(!Object.hasOwn(s.fleetSpeed,'enabled'));assert(!Object.hasOwn(s.fleetSpeed,'dailyDiamondLimit'));
   assert(s.fleetSpeed.fleets.every(p=>!p.repair&&!p.march&&p.marchSkipSeconds===60));
   assert(s.fleetSpeed.fleets.every(p=>!Object.hasOwn(p,'repairMaxDiamonds')&&!Object.hasOwn(p,'marchMaxDiamonds')));
   const exported={...exportAutomationSettings(s),version:1};delete exported.settings.fleetSpeed;assert.deepEqual(importAutomationSettings(exported).fleetSpeed,s.fleetSpeed);
@@ -114,17 +181,19 @@ await test('只读预览不改账本，仅允许所选队伍及加速种类',asy
   const f=fixture(),before=f.ledger.snapshot(),plan=await f.plan();assert.equal(plan.actions.length,1);assert.equal(plan.actions[0].buildingId,'1远征船');assert.deepEqual(f.ledger.snapshot(),before);assert.equal(f.writes.length,0);
   f.settings.fleetSpeed.fleets[0].march=false;await f.run();assert.equal(f.writes.length,0);
 });
-await test('逐队开启但总开关关闭时，预览明确说明阻断且不消费钻石',async()=>{
+await test('仅所选城战舰队开启加速时才读取和执行',async()=>{
   for(const mode of ['repair','march']){
     const f=fixture();if(mode==='repair')f.repair();
-    const before=f.ledger.snapshot();f.settings.fleetSpeed.enabled=false;
-    const plan=planFleetSpeed(null,f.config,f.settings,f.ledger);
-    assert.equal(plan.actions.length,0);assert.match(plan.notes.join('；'),/加速总开关已关闭/);
-    await f.run();assert.equal(f.reads,0);assert.equal(f.writes.length,0);assert.deepEqual(f.ledger.snapshot(),before);
-    f.settings.fleetSpeed.enabled=true;await f.run();assert.equal(f.writes.length,1);
-    assert.equal(f.writes[0].name,mode==='repair'?'SpeedUpRepairRequest':'SpeedUpFleetRequest');
+    const before=f.ledger.snapshot(),policy=f.settings.fleetSpeed.fleets[0];
+    Object.assign(policy,{repair:false,march:false});
+    f.settings.fleetSpeed.fleets[2][mode]=true;
+    await f.run();assert.equal(f.reads,0);
+    policy[mode]=true;
     f.settings.cityWar.enabled=false;
     assert.match(planFleetSpeed(null,f.config,f.settings,f.ledger).notes.join('；'),/联盟城战未开启/);
+    await f.run();assert.equal(f.reads,0);assert.equal(f.writes.length,0);assert.deepEqual(f.ledger.snapshot(),before);
+    f.settings.cityWar.enabled=true;await f.run();assert.equal(f.writes.length,1);
+    assert.equal(f.writes[0].name,mode==='repair'?'SpeedUpRepairRequest':'SpeedUpFleetRequest');
   }
 });
 await test('逐次回读、到剩余阈值停止，最少三次缩短300秒至60秒内',async()=>{
@@ -377,7 +446,7 @@ await test('新航程不会误确认旧请求，区服隔离，重复舰队阻�
   const g=fixture();g.state.fleets.push(structuredClone(g.state.fleets[0]));await g.run();assert.equal(g.writes.length,0);
 });
 await test('关闭开关、暂停、切换账号以及末次读回换航程均取消发送',async()=>{
-  for(const mutation of [f=>f.settings={...f.settings,fleetSpeed:{...f.settings.fleetSpeed,enabled:false}},f=>f.settings.resources.allowDiamonds=false,
+  for(const mutation of [f=>f.settings.cityWar.enabled=false,f=>f.settings.resources.allowDiamonds=false,
     f=>f.settings.fleetSpeed.fleets[0].march=false,f=>f.player.playerId=900002,f=>f.state.fleets[0].moveStartTs+=1]){
     const f=fixture();f.beforeRead=(name,count)=>{if(count===5)mutation(f);};await f.run();assert.equal(f.writes.length,0);assert.equal(f.ledger.snapshot().uncertain,0);
   }

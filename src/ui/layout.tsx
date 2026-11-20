@@ -103,7 +103,7 @@ export function dialogs() {
         <p id="console-version-description" className="dim">控制台已更新或重启。刷新后可继续保存修改和启动任务。</p>
       </DialogHeader>
       <div className="version-draft">
-        <p>未保存的修改仍保留在本页。刷新前，可返回页面复制需要的内容。</p>
+        <p>刷新会丢弃本页未保存的修改。需要保留时，可先返回页面复制内容。</p>
         <Button id="console-version-download" type="button" variant="outline" size="sm"><Download aria-hidden="true" />下载游戏配置草稿</Button>
       </div>
       <details id="console-version-account">

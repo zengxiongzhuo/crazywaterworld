@@ -18,7 +18,7 @@ const response = (version = 'old-page', data = { ok: true }, status = 200) => ({
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };
 function fixture(version = 'old-page', { account = 'account-a', hasDraft = true } = {}) {
   const meta = { content: version };
-  const env = { meta, account, hasDraft, requests: [], errors: [], events: [], downloads: 0, reloads: 0, confirms: 0, allowRefresh: false, progress: 0 };
+  const env = { meta, account, hasDraft, requests: [], errors: [], events: [], downloads: 0, reloads: 0, progress: 0 };
   const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
   const reopen = { hidden: true };
   const elements = new Map([['console-version-warning', dialog], ['console-version-open', reopen]]);
@@ -28,7 +28,7 @@ function fixture(version = 'old-page', { account = 'account-a', hasDraft = true 
   env.document = { getElementById: id => elements.get(id), querySelector: selector => selector.startsWith('meta[') ? meta : null };
   env.redirects = [];
   env.location = { href: 'http://console.test/', reload() { env.reloads++; }, replace(path) { env.redirects.push(path); } };
-  env.window = { confirm() { env.confirms++; return env.allowRefresh; }, dispatchEvent(event) { env.events.push(event.type); } };
+  env.window = { dispatchEvent(event) { env.events.push(event.type); } };
   env.fetch = async (path, options) => { env.requests.push({ path, options }); return env.fetchHook ? env.fetchHook(path, options) : response(); };
   const api = new Function('env', `
     const document = env.document, window = env.window, location = env.location, fetch = env.fetch;
@@ -117,12 +117,12 @@ await test('新版响应在JSON解析前触发冻结，写请求不采用新sche
   assert.equal(parsed, false); assert.equal(f.guard.isStale(), true);
 });
 
-await test('过期弹窗提供本地草稿备份和明确刷新确认，停止和断开仍可用', async () => {
+await test('过期弹窗可下载草稿、停止和断开账号，点击刷新直接重载', async () => {
   const f = fixture(); f.guard.reject(); f.action('download').onclick(); assert.equal(f.env.downloads, 1);
-  f.action('reload').onclick(); assert.equal(f.env.confirms, 1); assert.equal(f.env.reloads, 0);
-  f.env.allowRefresh = true; f.action('reload').onclick(); assert.equal(f.env.reloads, 1);
   await f.action('stop').onclick(); await f.action('disconnect').onclick();
   assert.deepEqual(f.env.requests.map(request => new URL(request.path, 'http://console.test').pathname), ['/api/loop/stop','/api/disconnect']);
+  assert.equal(f.env.reloads, 0);
+  f.action('reload').onclick(); assert.equal(f.env.reloads, 1);
 });
 
 await test('没有草稿或账号时隐藏下载和账号操作，有草稿后重新打开可以下载', () => {

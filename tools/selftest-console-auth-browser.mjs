@@ -19,7 +19,7 @@ const app = createConsole({ port: 0, protocol: {} });
 const output = path.resolve('output/console-auth');
 fs.mkdirSync(output, { recursive: true });
 let browser, passed = 0;
-const errors = [];
+const errors = [], dialogs = [];
 async function test(name, work) { await work(); passed++; console.log('通过：' + name); }
 try {
   const base = await app.listen();
@@ -31,6 +31,7 @@ try {
   const context = await browser.newContext({ viewport: { width: 1280, height: 850 } });
   const page = await context.newPage();
   page.on('pageerror', error => errors.push(error.message));
+  page.on('dialog', dialog => { dialogs.push(dialog.type()); void dialog.dismiss(); });
   const signIn = async () => {
     await page.locator('#console-password').fill('123456');
     await page.locator('#console-login-submit').click();
@@ -65,11 +66,14 @@ try {
     assert.equal((await context.request.get(base + '/api/accounts')).status(), 401);
     await second.close();
   });
-  await test('401触发重新登录，临时断网保持当前页面', async () => {
+  await test('401在配置保存中也能直接返回登录页，临时断网保持当前页面', async () => {
     await signIn();
     await context.setOffline(true); await page.waitForTimeout(100); assert.equal(page.url(), base + '/');
-    await context.setOffline(false); await context.clearCookies();
+    await context.setOffline(false);
+    await page.evaluate(() => { configEditor.saving = true; });
+    await context.clearCookies();
     await Promise.all([page.waitForURL(base + '/login'), page.evaluate(async () => { try { await window.call('/api/accounts'); } catch {} })]);
+    assert.deepEqual(dialogs, []);
   });
   await test('手机深色登录页没有横向溢出，键盘可提交', async () => {
     await page.setViewportSize({ width: 390, height: 844 });

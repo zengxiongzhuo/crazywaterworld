@@ -1,6 +1,9 @@
+import { createHash } from 'node:crypto';
 import { exactAutomationId } from './automation-policy.mjs';
 export const fleetSpeedKind = 'fleetSpeed';
 export const fleetCargoId = fleet => exactAutomationId(fleet?.treasureLootUid) ?? '0';
+export const fleetSpeedOperationId = (mode,start,target,cargo) =>
+  createHash('sha256').update(JSON.stringify([mode,start,target,cargo])).digest('hex').slice(0,20);
 export function sameFleetSpeedOperation(fleet, d) {
   return fleet?.buildingId === d.buildingId && (d.mode === 'repair'
     ? fleet.state === 4 && fleet.repairing?.startTs === d.start && fleet.repairing?.endDura === d.target

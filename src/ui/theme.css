@@ -401,7 +401,7 @@ html[data-theme="dark"] {
 
 /* 四列以上的表格在窄屏变成一行一张卡片，避免内容被挤成竖排。 */
 @container main (max-width: 600px) {
-  .table-stack thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  :is(.table-stack, .sea-records) thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
   .table-stack :is(table, tbody, tr) { display: block; width: 100%; }
   .table-stack tr { padding: 0.75rem 0; border-bottom: 1px solid var(--border); }
   .table-stack tr:last-child { border-bottom: 0; }
@@ -410,6 +410,20 @@ html[data-theme="dark"] {
   .table-stack td:first-child { padding-left: 0; font-weight: 500; }
   .table-stack td:first-child::before { display: none; }
   .table-stack td:empty { display: none; }
+}
+
+/* 海面的小表共用表头，工厂和订单在窄屏按记录换行。 */
+:is(#world-factories, #world-orders) th { height: 2rem; padding-inline: 0.375rem; color: var(--muted-foreground); font-size: 0.75rem; }
+:is(#world-factories, #world-orders) td { padding: 0.25rem 0.375rem; overflow-wrap: anywhere; }
+@container main (max-width: 600px) {
+  .sea-records :is(table, tbody) { display: block; }
+  .sea-records tbody tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.25rem 0.75rem; align-items: start; padding-block: 0.5rem; }
+  :is(#world-factories, #world-orders) .sea-records td { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0 0.375rem; min-width: 0; padding: 0; }
+  .sea-records td::before { content: attr(data-label); color: var(--muted-foreground); font-size: 0.75rem; }
+  .sea-records td:first-child { font-weight: 600; }
+  .sea-records td:first-child::before, #world-orders td:last-child::before { content: none; }
+  .world-factory-section td:first-child, .world-factory-section td:nth-child(4), #world-orders td:nth-child(n+3) { grid-column: 1 / -1; }
+  .world-farm-section th { white-space: normal; }
 }
 
 /* 只放必须盖过工具类的规则。 */

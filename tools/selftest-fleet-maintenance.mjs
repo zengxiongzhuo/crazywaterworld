@@ -29,7 +29,7 @@ await test('1992汽油与三队真实耐久样本：完整报价2610/7800/2640�
  const f=fixture(),l=ledger(),before=structuredClone(f.settings),view=await run(f,l);assert.deepEqual(view.rows.map(r=>r.cost),[2610,7800,2640]);assert(view.rows.every(r=>r.condition.includes('等待汽油')));assert.equal(view.minimumFuel,2610);assert.equal(f.client.writes.length,0);assert.deepEqual(f.settings,before);
  assert.match(dispatchReservationReason(f.client,f.settings,'treasure','1远征船'),/战后维修/);
 });
-await test('无目标、已领奖满额、城战结束及出征上限已满仍独立维修，不要求下次出征汽油',async()=>{
+await test('无目标、已领奖满额及城战结束后仍独立维修，维修不增加出征次数',async()=>{
  const f=fixture(),l=ledger();f.state.fuel=2610;const t=l.reserve({cityWarDispatches:999});l.confirm(t);const result=await run(f,l);
  assert.equal(f.client.writes.length,1);assert.equal(f.client.writes[0].name,'RepairFleetRequest');assert.equal(f.state.fuel,0);assert.equal(result.rows[0].state,'repairing');assert.equal(l.snapshot().counters.cityWarDispatches,999);assert.equal(l.snapshot().counters.cityWarPetrol,2610);
 });

@@ -74,14 +74,14 @@ await test('页面脚本可解析，废弃入口移除且主分支独有入口�
  for(const id of ['activities-list','overview-task-groups','inventory-query','world-map-fleets'])assert.equal((PAGE.match(new RegExp('id="'+id+'"','g'))??[]).length,1,id);
  assert(PAGE.includes('当前进度'));assert(PAGE.includes('当前条件'));assert(PAGE.includes('width:165px'));assert(PAGE.includes('width:100px'));
 });
-await test('建筑一览移除一键领取和任务奖励面板及其按钮绑定', () => {
+await test('建筑一览移除一键领取、任务奖励、海面单轮操作和资源田面板', () => {
  const manual = manualPage();
  assert(!manual.includes('一键领取'));
  assert(!manual.includes('任务奖励'));
- for (const id of ['loot-run', 'tasks-plan', 'tasks-run', 'loot-hint', 'tasks-hint']) {
+ for (const id of ['loot-run', 'tasks-plan', 'tasks-run', 'loot-hint', 'tasks-hint', 'world-plan', 'world-run', 'world-speedup', 'world-reroll', 'world-hint', 'world-fields']) {
   assert(!PAGE.includes(id), id + ' 的页面标记与脚本引用应全部移除');
  }
- for (const id of ['world-plan', 'world-run', 'world-view', 'world-factories', 'world-orders', 'production-plan-refresh', 'production-plan-result', 'world-fields']) {
+ for (const id of ['world-view', 'world-factories', 'world-orders', 'production-plan-refresh', 'production-plan-result']) {
   assert.equal((manual.match(new RegExp('id="' + id + '"', 'g')) ?? []).length, 1, id);
  }
 });

@@ -113,7 +113,14 @@ section h2:first-child { margin-top:0 }
 .world-refresh-controls { display:flex; align-items:center; flex-wrap:wrap; gap:8px; font-weight:400 }
 .world-refresh-setting { display:inline-flex; align-items:center; gap:6px; font-weight:400 }
 #world-map-refresh-seconds { width:72px }
-.fleet-summary th:first-child,.fleet-summary td:first-child,.fleet-summary td:nth-child(3) { white-space:nowrap }
+.fleet-summary td { overflow-wrap:anywhere; font-variant-numeric:tabular-nums }
+@container main (width > 600px) {
+  .fleet-summary table { width:100%; table-layout:fixed }
+  .fleet-summary th:nth-child(1) { width:12% }
+  .fleet-summary th:nth-child(2) { width:18% }
+  .fleet-summary th:nth-child(3) { width:20% }
+  .fleet-summary th:nth-child(5) { width:7rem }
+}
 .world-map-toolbar { gap:8px; margin-block:12px }
 .world-map-layout { margin-top:12px }
 .world-map-scroll { height:min(65vh,620px); min-height:320px; overflow:hidden; background:var(--muted); border:1px solid var(--border); border-radius:calc(var(--radius) * 1.4); position:relative }
@@ -128,7 +135,17 @@ section h2:first-child { margin-top:0 }
 .world-map-detail { padding:12px 16px; background:var(--card); line-height:1.5; overflow-wrap:anywhere }
 .world-map-detail[open] { display:block }
 .world-map-detail:not(:modal) { position:absolute; inset:12px 12px auto auto; z-index:1; margin:0; width:min(320px,45%); max-height:calc(100% - 16px); box-shadow:var(--shadow-md); animation:none }
-.world-map-detail[data-city]:not(:modal) { inset:var(--city-top,8px) auto auto var(--city-left,8px); width:max-content; min-width:min(224px,calc(100% - 16px)); max-width:calc(100% - 16px) }
+.world-map-detail[data-anchor-key]:not(:modal) {
+  inset:var(--city-top,8px) var(--city-right,auto) auto var(--city-left,8px);
+  width:max-content;
+  max-width:min(30rem,var(--city-room,calc(100% - 16px)));
+  min-width:min(max(17rem,var(--city-min-width,0px)),var(--city-room,calc(100% - 16px)),30rem);
+  max-height:var(--city-max-height,calc(100% - 16px));
+  overflow:auto;
+  scrollbar-width:thin;
+  overscroll-behavior:contain;
+}
+.world-map-detail[data-city]:not(:modal) .world-city-actions { min-height:2.25rem }
 .world-map-detail:modal { position:fixed; inset:0; margin:auto; width:min(344px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:16px; overscroll-behavior:contain }
 html:has(.world-map-detail:modal) { overflow:hidden }
 .world-map-detail:modal #world-map-detail-close { min-width:36px; min-height:36px }
@@ -136,13 +153,15 @@ html:has(.world-map-detail:modal) { overflow:hidden }
 .world-map-detail-heading>strong { font-size:1rem; min-width:0 }
 .world-map-detail p { margin:4px 0 }
 .world-city-actions { margin-top:4px }
+.world-city-actions:empty { display:none }
 .world-city-buttons { display:flex; flex-wrap:wrap; align-items:center; gap:8px }
+.world-map-detail:not(:modal) .world-city-buttons { width:fit-content; max-width:100% }
 .world-city-buttons select { width:auto; max-width:100%; min-width:0 }
 .world-map-detail:modal .world-city-buttons { display:grid; grid-template-columns:minmax(0,1fr) }
 .world-map-detail:modal .world-city-actions :is(button,select) { width:100%; min-height:44px }
 .world-city-actions p { font-size:13px }
 @media (max-width:700px) {
-  .world-map-detail:not([data-city]):not(:modal) { position:static; width:100%; max-width:none; max-height:none; margin-top:8px; box-shadow:none }
+  .world-map-detail:not([data-anchor-key]):not(:modal) { position:static; width:100%; max-width:none; max-height:none; margin-top:8px; box-shadow:none }
 }
 .world-map-stats { margin:8px 0 }
 .world-map-stats>summary { width:fit-content; color:var(--foreground) }
@@ -164,26 +183,47 @@ html:has(.world-map-detail:modal) { overflow:hidden }
 .world-city-facts { display:grid; grid-template-columns:max-content minmax(0,1fr); gap:6px 16px; margin:8px 0 }
 .world-city-facts dt { color:var(--muted-foreground) }
 .world-city-facts dd { margin:0; overflow-wrap:anywhere }
+.world-nearby-fleets { margin-top:10px; border-top:1px solid var(--border); padding-top:8px }
+.world-nearby-fleets h3,.world-fleet-card h4 { margin:0; font-size:inherit; font-weight:600 }
+.world-fleet-grid { display:grid; gap:6px; margin-top:6px }
+.world-fleet-card { min-width:0; margin-top:6px; padding:8px 10px; background:var(--muted); border-radius:var(--radius); font-size:13px; font-variant-numeric:tabular-nums }
+.world-fleet-grid > .world-fleet-card { margin:0 }
+.world-fleet-card .world-city-facts { margin:0; gap:2px 10px }
+.world-fleet-card h4 { margin-bottom:4px }
+.world-fleet-card .world-journey { display:block; margin-top:4px }
+.world-map-detail:not(:modal) .world-fleet-grid:has(> :nth-child(2)) { grid-template-columns:repeat(2,minmax(0,1fr)) }
+.world-map-detail:not(:modal) .world-city-summary {
+  grid-auto-flow:column;
+  grid-template-rows:auto auto;
+  grid-template-columns:auto auto auto;
+  gap:2px 14px;
+}
+.world-map-detail:not(:modal) .world-city-summary dt { font-size:12px }
 .world-fuel-summary { display:flex; gap:8px 20px; flex-wrap:wrap; padding:8px 0 }
 .world-fuel-summary strong { margin-left:6px; font-weight:500; font-variant-numeric:tabular-nums }
 .world-journey { font-variant-numeric:tabular-nums }
 #world-view:empty { display:none }
 
 /* ---- 建筑一览 ---- */
-.factory-table td { vertical-align:top; white-space:normal }
+#world-factories { display:grid; grid-template-columns:minmax(0,1fr); align-items:start; gap:16px 24px }
+#world-factories > section { min-width:0 }
+#world-factories h2,#world-orders h2 { margin:0 0 4px }
+#world-factories:not(:empty) + #world-orders:not(:empty) { margin-top:16px }
+@container main (min-width:720px) {
+  #world-factories:has(.world-farm-section):has(.world-slot-section) { grid-template-columns:minmax(0,3fr) minmax(0,2fr) }
+  .world-factory-section { grid-column:1 / -1 }
+}
 .factory-queue { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr)); gap:16px }
 .factory-slot { display:grid; align-content:start; gap:2px; min-width:0; font-size:12px }
 .factory-product { font-size:14px; overflow-wrap:anywhere }
-.factory-current { display:grid; justify-items:start; gap:4px }
-.factory-current-product { display:flex; flex-wrap:wrap; align-items:baseline; gap:4px 8px }
+.factory-current,.factory-current-product { display:flex; align-items:center; flex-wrap:wrap; gap:2px 8px; min-width:0 }
+.factory-current-product { align-items:baseline; column-gap:4px }
 #factory-production-dialog { grid-template-rows:auto minmax(0,1fr) auto }
 #factory-production-body { min-height:0; overflow-y:auto }
 .production-time { color:var(--muted-foreground); font-variant-numeric:tabular-nums; overflow-wrap:anywhere }
 .order-state { display:grid; justify-items:start; gap:4px; max-width:40ch; white-space:normal }
 .order-manual-actions { display:flex; flex-wrap:wrap; gap:6px }
 .order-refresh-time { display:block; font-variant-numeric:tabular-nums; font-size:12px; color:var(--muted-foreground) }
-.field-yield-summary { display:flex; flex-wrap:wrap; gap:4px 16px; margin:8px 0 12px }
-.field-yield-summary span { white-space:nowrap }
 .stock-panel>summary { padding-inline:24px }
 .stock-fold-hint { margin-inline-start:12px }
 .stock-panel[open] .stock-fold-hint { display:none }

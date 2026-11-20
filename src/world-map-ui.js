@@ -5,9 +5,11 @@ let worldMapOwner=null,worldMapData=null,worldMapSerial=0,worldMapLoading=false,
 let worldMapView={x:0,y:0,zoom:1},worldMapDrag=null,worldMapDraggedAt=0,worldMapAllNames=false;
 let worldMapReceivedAt=0,worldMapLastAttempt=0,worldMapRefreshEvery=10,worldMapMovingNodes=[],worldMapJourneyNodes=[],worldMapDrawnPoints=[];
 let worldCityAction=null;
+let worldMapPopupPlacement=null;
+let worldMapOverviewRead=null;
 const worldCitySending=new Set();
-const cityModalScreen=matchMedia('(max-width:700px), (hover:none) and (pointer:coarse)');
-let worldCityPinned=false,hoverCityKey=null,cityHoverTimer=0,cityLeaveTimer=0;
+const worldFleetSpeedBusy=new Set();
+const mapModalScreen=matchMedia('(max-width:700px), (hover:none) and (pointer:coarse)');
 const worldLayerNames={regions:'领地',cities:'城池',cityWar:'城战',fleets:'我的舰队',traffic:'已同步行军',fields:'资源田',treasure:'货轮',pirates:'海盗',radar:'情报',boss:'Boss'};
 const worldLayerColors={regions:'#69b3a5',cities:'#526f7a',cityWar:'#b5483e',fleets:'#2866cc',traffic:'#8653a0',fields:'#4b91b7',treasure:'#c18a12',pirates:'#bc4747',radar:'#b7672d',boss:'#8653a0'};
 const worldLayers=new Set(['regions','cities','cityWar','fleets','traffic','treasure','radar','boss']);
@@ -26,6 +28,9 @@ bindConsoleSlice('worldMap', { worldMapOwner, worldMapData, worldMapLoading, wor
 
 function resetWorldMap(){
  closeWorldMapDetail();
+ worldMapOverviewRead=null;
+ if($('modal').open && $('m-body').querySelector('[data-fleet-speed-confirm]'))closeModal();
+ setFleetSpeedFeedback('');
  setConsoleValue('worldMap', 'worldMapOwner', null);setConsoleValue('worldMap', 'worldMapData', null);worldMapPainted=null;setConsoleValue('worldMap', 'worldMapSelected', null);worldMapSerial++;setConsoleValue('worldMap', 'worldMapLoading', false);
  setConsoleValue('worldMap', 'worldMapReceivedAt', 0);worldMapLastAttempt=0;worldMapMovingNodes=[];worldMapJourneyNodes=[];worldMapDrawnPoints=[];
  $('world-map-refresh').disabled=false;for(const id of ['world-map','world-map-fleets','world-map-wars','world-map-treasures','world-map-resources','world-map-layers','world-map-legend','world-map-state-legend','world-map-notes'])clear($(id));
@@ -38,8 +43,139 @@ const mapServerNow=()=>worldMapData?worldMapData.checkedAt+Math.min(mapElapsed()
 function mapDuration(seconds){if(!Number.isFinite(seconds))return '时间未同步';seconds=Math.max(0,Math.ceil(seconds));const minutes=Math.floor(seconds/60);return minutes?minutes+'分'+seconds%60+'秒':seconds+'秒';}
 function mapJourney(journey){if(!journey)return '—';const remaining=Math.max(0,Math.ceil(journey.endAt-mapServerNow()));return journey.from+' → '+journey.to+'（'+(mapStale()?'待同步':remaining?'剩余'+mapDuration(remaining):'到达待同步')+'）';}
 function journeyNode(journey){const node=el('span','world-journey',mapJourney(journey));if(journey){node.title='全程 '+mapDuration(journey.endAt-journey.startAt);worldMapJourneyNodes.push({node,journey});}return node;}
-function locateOwnFleet(fleet){const point=worldMapData?.points.find(p=>p.key==='fleet-'+fleet.id);if(!point)return;const position=mapMotionPosition(point,mapServerNow());setConsoleValue('worldMap', 'worldMapView', {x:position.x,y:position.y,zoom:4});setMapZoomInput(4);void showWorldMapTarget(point);}
-function mapFacts(panel,entries){const list=el('dl','world-city-facts');for(const [label,value]of entries){list.append(el('dt','',label),el('dd','',value));}panel.append(list);}
+function locateOwnFleet(fleet){
+ const point=worldMapData?.points.find(p=>p.key==='fleet-'+fleet.id);
+ if(!point)return;
+ if(!worldLayers.has('fleets'))$('world-map-layers').querySelector('input[aria-label="我的舰队图层"]')?.click();
+ const position=mapMotionPosition(point,mapServerNow());
+ setConsoleValue('worldMap','worldMapView',{x:position.x,y:position.y,zoom:4});
+ setMapZoomInput(4);
+ $('world-map-scroll').scrollIntoView({block:'center',behavior:'instant'});
+ void showWorldMapTarget(point,false,'locate');
+}
+function setFleetSpeedFeedback(message){
+ const feedback=$('world-fleet-speed-feedback');
+ feedback.textContent=message;
+ feedback.hidden=!message;
+}
+function fleetSpeedTargetCurrent(account,fleet){
+ const latest=worldMapData?.fleets.find(row=>row.id===fleet.id);
+ return account===current && account===worldMapOwner && snapshot.connected && !snapshot.paused &&
+  !disconnected.has(account) && JSON.stringify(latest?.speedTarget)===JSON.stringify(fleet.speedTarget);
+}
+function updateFleetSpeedButtons(){
+ for(const button of $('world-map-fleets').querySelectorAll('[data-fleet-speed]')){
+  button.disabled=worldFleetSpeedBusy.has(current);
+ }
+}
+async function submitFleetSpeed(account,fleet,quote,label){
+ if(worldFleetSpeedBusy.has(account) || current!==account)return;
+ if(!fleetSpeedTargetCurrent(account,fleet) || Date.now()>=quote.expiresAt){
+  setFleetSpeedFeedback('舰队状态或报价已变化，请重新选择加速。');
+  return;
+ }
+ worldFleetSpeedBusy.add(account);
+ updateFleetSpeedButtons();
+ setFleetSpeedFeedback(fleet.name+' · '+label+'中…');
+ try{
+  const result=await call('/api/world/fleet-speed/action?account='+encodeURIComponent(account),{
+   method:'POST',body:JSON.stringify({confirm:true,token:quote.token,confirmedCost:quote.maxCost})
+  });
+  if(current===account && worldMapOwner===account)setFleetSpeedFeedback(result.message);
+ }catch(error){
+  if(current===account && worldMapOwner===account)setFleetSpeedFeedback(error.message);
+ }finally{
+  if(current===account && worldMapOwner===account){
+   // 已在途的地图读可能早于加速回执，等它落地后再取最终舰队状态。
+   if(worldMapOverviewRead)await worldMapOverviewRead.catch(()=>{});
+   if(current===account && worldMapOwner===account)await refreshWorldMap();
+  }
+  worldFleetSpeedBusy.delete(account);
+  if(current===account)updateFleetSpeedButtons();
+ }
+}
+async function previewFleetSpeed(account,fleet,label){
+ if(worldFleetSpeedBusy.has(account) || !fleetSpeedTargetCurrent(account,fleet))return;
+ worldFleetSpeedBusy.add(account);
+ updateFleetSpeedButtons();
+ setFleetSpeedFeedback('正在核对'+fleet.name+'的加速费用…');
+ try{
+  const quote=await call('/api/world/fleet-speed/preview?account='+encodeURIComponent(account),{
+   method:'POST',body:JSON.stringify(fleet.speedTarget)
+  });
+  if(current!==account || worldMapOwner!==account)return;
+  if(!fleetSpeedTargetCurrent(account,fleet)){setFleetSpeedFeedback('舰队状态已变化，请重新选择加速。');return;}
+  if(!quote.token || !Number.isSafeInteger(quote.maxCost) || quote.maxCost<0){
+   setFleetSpeedFeedback(quote.reason || '无法取得加速费用，请刷新舰队后重试。');return;
+  }
+  setFleetSpeedFeedback('');
+  const prompt=el('p','','将本次'+(fleet.speedTarget.mode==='march'?'行军':'维修')+'加速至完成，最多消耗 '+fmt(quote.maxCost)+' 钻石。');
+  prompt.dataset.fleetSpeedConfirm='true';
+  openConfirm(label+' · '+fleet.name,[prompt],()=>submitFleetSpeed(account,fleet,quote,label),'确认加速');
+ }catch(error){
+  if(current===account && worldMapOwner===account)setFleetSpeedFeedback(error.message);
+ }finally{
+  worldFleetSpeedBusy.delete(account);
+  if(current===account)updateFleetSpeedButtons();
+ }
+}
+function worldFleetSpeedButton(account,fleet){
+ const target=fleet.speedTarget;
+ if(target?.buildingId!==fleet.id || !['march','repair'].includes(target?.mode))return '—';
+ const label=target.mode==='march'?'派遣加速':'维修加速',button=smallButton(label);
+ button.dataset.fleetSpeed=fleet.id;
+ button.disabled=worldFleetSpeedBusy.has(account);
+ button.onclick=()=>previewFleetSpeed(account,fleet,label);
+ return button;
+}
+function mapFacts(panel,entries){
+ const list=el('dl','world-city-facts');
+ for(const [label,value]of entries)list.append(el('dt','',label),el('dd','',value));
+ panel.append(list);
+ return list;
+}
+function worldFleetCard(point,showName=true){
+ const card=el('article','world-fleet-card');
+ card.setAttribute('aria-label',point.name);
+ if(showName)card.append(el('h4','',point.name));
+ const fleet=point.fleetInfo;
+ if(fleet){
+  mapFacts(card,[['状态',fleet.state||'未同步'],['耐久',mapNumber(fleet.durability)+'/'+mapNumber(fleet.maxDura)],['任务',fleet.task||'未同步']]);
+ }else if(point.detail)card.append(el('p','',point.detail));
+ const journey=fleet?.journey??point.motion;
+ if(journey)card.append(journeyNode(journey));
+ return card;
+}
+function worldFleetCards(fleets){
+ const grid=el('div','world-fleet-grid');
+ for(const fleet of fleets)grid.append(worldFleetCard(fleet));
+ return grid;
+}
+function paintWorldCityFacts(panel,point){
+ const city=point.cityInfo,declared=city.declared??[],fighters=city.fighters??[];
+ const entries=[['当前归属',city.owner],['城战',city.status]];
+ if(city.assemble)entries.push(['集结','本盟集结城市']);
+ if(declared.length)entries.push(['宣战',declared.map(row=>row.attack+' → '+row.defence).join('；')]);
+ if(declared.length || fighters.length || city.attack>0 || city.priorityAttack>0){
+  entries.push(['进攻','优先 '+mapNumber(city.priorityAttack)+' + 排队 '+mapNumber(city.attack)]);
+ }
+ entries.push(['驻防','优先 '+mapNumber(city.priorityDefence)+' + 普通 '+mapNumber(city.defence)]);
+ const facts=mapFacts(panel,entries);
+ if(fighters.length){
+  panel.append(table(['交战位','进攻方','防守方'],fighters.map((row,i)=>[String(i+1),row.attack,row.defence])));
+ }
+ const radius=12*mapViewBox().width/Math.max(1,$('world-map-scroll').clientWidth),now=mapServerNow();
+ const nearby=worldMapData.points.filter(fleet=>{
+  if(fleet.layer!=='fleets' && fleet.layer!=='traffic')return false;
+  const {x,y}=mapMotionPosition(fleet,now);
+  return Math.hypot(x-point.x,y-point.y)<radius;
+ });
+ if(!nearby.length)return;
+ if(nearby.length>1 && entries.length===3)facts.classList.add('world-city-summary');
+ const section=el('section','world-nearby-fleets');
+ section.append(el('h3','','附近舰队 · '+nearby.length),worldFleetCards(nearby));
+ panel.append(section);
+}
 function paintWorldFuel(data){
  const box=clear($('world-map-resources')),usage=data.fuelUsage,stock=usage?.stock??data.resources?.find(r=>r.id==='汽油')?.value??null,summary=el('div','world-fuel-summary');
  for(const [label,value]of [['库存',stock],['今日耗油',usage?.confirmed],['待确认',usage?.pending]]){const item=el('span','',label);item.append(el('strong','',mapNumber(value)));summary.append(item);}box.append(summary);
@@ -55,76 +191,89 @@ function mapViewBox(){
 }
 function applyMapView(){if(!worldMapData)return;const v=mapViewBox();$('world-map').setAttribute('viewBox',[v.x,v.y,v.width,v.height].join(' '));}
 function mapZoom(value,anchor){
- if(!worldMapData)return;clearCityHover();if($('world-map-detail').dataset.city&&!worldCityPinned)closeWorldMapDetail();const before=mapViewBox();mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.zoom=Math.max(1,Math.min(8,value))));setMapZoomInput(worldMapView.zoom);
+ if(!worldMapData)return;const before=mapViewBox();mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.zoom=Math.max(1,Math.min(8,value))));setMapZoomInput(worldMapView.zoom);
  if(anchor){const after=mapViewBox();mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.x=before.x+before.width*anchor.x+(0.5-anchor.x)*after.width));mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.y=before.y+before.height*anchor.y+(0.5-anchor.y)*after.height));}
  drawWorldMap();
 }
 function mapFullView(){if(!worldMapData)return;closeWorldMapDetail();setConsoleValue('worldMap', 'worldMapView', {x:worldMapData.width/2,y:worldMapData.height/2,zoom:1});setMapZoomInput(1);drawWorldMap();}
 
-function clearCityHover(){
- clearTimeout(cityHoverTimer);clearTimeout(cityLeaveTimer);hoverCityKey=null;
-}
 function selectedMapMarker(key=worldMapSelected){
  return key && $('world-map-markers')?.querySelector('[data-world-target="'+CSS.escape(key)+'"]');
 }
+function hasAnchoredMapDetail(point){
+ return !!point.cityInfo || point.layer==='fleets' || point.layer==='traffic';
+}
 function closeWorldMapDetail({restoreFocus=false,redraw=false}={}){
  const dialog=$('world-map-detail'),key=worldMapSelected;
- clearCityHover();worldCityPinned=false;worldCityAction?.readController?.abort();worldCityAction=null;
+ const fleetButton=restoreFocus && dialog.hasAttribute('data-located-fleet') && key
+  && $('world-map-fleets').querySelector('[data-locate-fleet="'+CSS.escape(key)+'"]');
+ worldCityAction?.readController?.abort();worldCityAction=null;
  if($('modal').open && $('m-body').querySelector('[data-city-confirm]'))closeModal();
  setConsoleValue('worldMap','worldMapSelected',null);
  if(dialog.open)dialog.close();
- dialog.hidden=true;delete dialog.dataset.city;
+ dialog.hidden=true;delete dialog.dataset.city;delete dialog.dataset.anchorKey;delete dialog.dataset.locatedFleet;worldMapPopupPlacement=null;
  if(redraw)drawWorldMap();
- if(restoreFocus)selectedMapMarker(key)?.focus({preventScroll:true});
+ if(restoreFocus)(fleetButton||selectedMapMarker(key))?.focus({preventScroll:true});
 }
-function placeWorldCityPopup(){
+function placeWorldMapPopup(){
  const dialog=$('world-map-detail');
- if(!dialog.open || !dialog.dataset.city || dialog.matches(':modal'))return;
- const anchor=selectedMapMarker(dialog.dataset.city)?.lastElementChild;
+ const key=dialog.dataset.anchorKey;
+ if(!dialog.open || !key || key!==worldMapSelected || dialog.matches(':modal'))return;
+ const anchor=selectedMapMarker(key)?.lastElementChild;
  if(!anchor){closeWorldMapDetail();return;}
  const stage=$('world-map-scroll').getBoundingClientRect(),mark=anchor.getBoundingClientRect();
  const cx=(mark.left+mark.right)/2-stage.left,cy=(mark.top+mark.bottom)/2-stage.top;
  if(cx<0 || cx>stage.width || cy<0 || cy>stage.height || mark.top>window.innerHeight || mark.bottom<0){closeWorldMapDetail({redraw:true});return;}
- const gutter=8,w=dialog.offsetWidth,h=dialog.offsetHeight;
- const left=Math.max(gutter,Math.min(stage.width-w-gutter,cx-w/2));
+ const gutter=8;
  const topLimit=Math.max(gutter,gutter-stage.top),bottomLimit=Math.min(stage.height,window.innerHeight-stage.top)-gutter;
  const below=mark.bottom-stage.top+4,above=mark.top-stage.top-4;
- const top=bottomLimit-below>=h || bottomLimit-below>=above-topLimit?below:above-h;
- dialog.style.setProperty('--city-left',left+'px');
- dialog.style.setProperty('--city-top',Math.max(topLimit,Math.min(bottomLimit-h,top))+'px');
+ const belowRoom=bottomLimit-below,aboveRoom=above-topLimit;
+ if(worldMapPopupPlacement?.key!==key){
+  dialog.style.removeProperty('--city-max-height');
+  dialog.style.removeProperty('--city-room');
+  dialog.style.removeProperty('--city-min-width');
+  let initialHeight=dialog.offsetHeight;
+  if(dialog.dataset.city && !$('world-map-city-actions').childElementCount){
+   // 只在地图上给可能出现的按钮留出空间，空操作区本身不占高。
+   const style=getComputedStyle($('world-map-city-actions'));
+   initialHeight+=parseFloat(style.minHeight)+parseFloat(style.marginTop);
+  }
+  worldMapPopupPlacement={key,below:belowRoom>=aboveRoom,fromRight:cx>stage.width/2,
+   initialWidth:dialog.offsetWidth,initialHeight};
+ }
+ // 本次打开只按标记与视口选边。舰队列表的加载、刷新和换行均不参与定位。
+ const placement=worldMapPopupPlacement;
+ // 滚动或调整窗口后，原来的一侧可能连标题都放不下。
+ const headingHeight=$('world-map-detail-close').offsetHeight+2*gutter;
+ if((placement.below?belowRoom:aboveRoom)<headingHeight && (placement.below?aboveRoom:belowRoom)>=headingHeight)
+  placement.below=!placement.below;
+ const top=placement.below?Math.max(topLimit,below):Math.max(topLimit,above-placement.initialHeight);
+ const bottom=placement.below?bottomLimit:Math.min(bottomLimit,above);
+ dialog.style.setProperty('--city-max-height',Math.max(0,bottom-top)+'px');
+ // 固定靠标记的一条边，新增操作向地图内侧展开。
+ const distance=placement.fromRight?stage.width-cx:cx;
+ const inset=Math.max(gutter,distance-placement.initialWidth/2);
+ dialog.style.setProperty('--city-left',placement.fromRight?'auto':inset+'px');
+ dialog.style.setProperty('--city-right',placement.fromRight?inset+'px':'auto');
+ dialog.style.setProperty('--city-room',Math.max(0,stage.width-inset-gutter)+'px');
+ dialog.style.setProperty('--city-top',top+'px');
 }
 function presentWorldMapDetail(point,source){
  const dialog=$('world-map-detail'),wasModal=dialog.matches(':modal');
- const modal=!!point.cityInfo && (cityModalScreen.matches || source==='touch' || (source==='refresh' && wasModal));
+ const anchored=hasAnchoredMapDetail(point);
+ const modal=anchored && (mapModalScreen.matches || source==='touch' || (source==='refresh' && wasModal));
  if(dialog.open && wasModal!==modal)dialog.close();
+ if(!anchored || modal)worldMapPopupPlacement=null;
  dialog.hidden=false;
+ if(anchored)dialog.dataset.anchorKey=point.key;else delete dialog.dataset.anchorKey;
  if(point.cityInfo)dialog.dataset.city=point.key;else delete dialog.dataset.city;
+ if(source!=='refresh')dialog.toggleAttribute('data-located-fleet',source==='locate');
  if(!dialog.open){
   if(modal)dialog.showModal();
   else dialog.setAttribute('open','');
  }
- placeWorldCityPopup();
- if(point.cityInfo && source!=='refresh' && source!=='hover')$('world-map-detail-close').focus({preventScroll:true});
-}
-function leaveWorldCity(){
- clearCityHover();
- if(worldCityPinned || !$('world-map-detail').dataset.city)return;
- cityLeaveTimer=setTimeout(()=>{
-  if(!worldCityPinned && !$('world-map-detail').matches(':hover'))closeWorldMapDetail({redraw:true});
- },260);
-}
-function hoverWorldCity(event){
- if(event.pointerType!=='mouse' || cityModalScreen.matches || worldCityPinned || worldMapDrag || event.buttons)return;
- const key=event.target.closest?.('[data-world-city]')?.dataset.worldTarget;
- if(!key){if(hoverCityKey)leaveWorldCity();return;}
- if(hoverCityKey===key)return;
- clearCityHover();hoverCityKey=key;
- if(worldMapSelected===key && !$('world-map-detail').hidden)return;
- cityHoverTimer=setTimeout(()=>{
-  const point=worldMapDrawnPoints.find(row=>row.key===key);
-  if(point && worldMapOwner===current && !worldMapDrag && !worldCityPinned && !$('modal').open)
-   void showWorldMapTarget(point,false,'hover');
- },180);
+ placeWorldMapPopup();
+ if(anchored && source!=='refresh')$('world-map-detail-close').focus({preventScroll:true});
 }
 
 function worldCityIsCurrent(view){
@@ -144,7 +293,7 @@ function cityCommandButton(view,quote,key,label,lines,danger=false){
   if(refreshExpiredCityQuote(view,quote))return;
   const text=lines.map((line,index)=>el('p',index?'dim':'',line));
   text[0].dataset.cityConfirm='true';
-  openConfirm(label+' · '+view.point.name,text,()=>submitWorldCityAction(view,quote,key));
+  openConfirm(label+' · '+view.point.name,text,()=>submitWorldCityAction(view,quote,key),'确定');
  };
  return button;
 }
@@ -156,12 +305,20 @@ function refreshExpiredCityQuote(view,quote){
 }
 function paintWorldCityActions(view){
  if(!worldCityIsCurrent(view))return;
- const root=clear($('world-map-city-actions')),controls=el('div','world-city-buttons');
+ const root=$('world-map-city-actions');
+ root.setAttribute('aria-busy',String(view.loading));
+ if(view.loading && root.querySelector('.world-city-buttons')){
+  for(const control of root.querySelectorAll('select,button'))control.disabled=true;
+  return;
+ }
+ clear(root);
+ const controls=el('div','world-city-buttons');
  const status=el('p','dim');status.setAttribute('role','status');
  if(view.message){const feedback=el('p','',view.message);feedback.setAttribute('role','status');root.append(feedback);}
- if(worldCitySending.has(view.account)||view.loading){
-  status.textContent=worldCitySending.has(view.account)?'正在提交…':'正在读取可用操作…';root.append(status);return;
+ if(worldCitySending.has(view.account)){
+  status.textContent='正在提交…';root.append(status);return;
  }
+ if(view.loading)return;
  if(!view.quote){
   status.textContent=view.readError||'尚未读取城池操作';
   const retry=smallButton('重试');retry.onclick=()=>loadWorldCityActions(view);
@@ -169,7 +326,7 @@ function paintWorldCityActions(view){
  }
  const quote=view.quote,dispatch=quote?.dispatch,declare=quote?.declare,cancel=quote?.cancelDeclare,assemble=quote?.assemble,recruit=quote?.recruit;
  if(dispatch?.fleets?.length && !dispatch.reason && quote.token){
-  const select=el('select');select.setAttribute('aria-label','选择空闲舰队');
+  const select=el('select');select.setAttribute('aria-label','请选择空闲舰队');
   const availableIds=new Set(dispatch.fleets.map(fleet=>fleet.buildingId));
   for(const fleet of dispatch.fleetChoices??dispatch.fleets){
    const available=availableIds.has(fleet.buildingId) && fleet.available!==false;
@@ -182,7 +339,8 @@ function paintWorldCityActions(view){
   select.value=view.fleetId;
   if(select.selectedIndex<0)select.value=select.querySelector('option:enabled')?.value??'';
   const send=component('ui-confirm');
-  send.textContent=({reinforce:'增援',relocate:'驻防',attack:'进攻'})[dispatch.intent]||'派遣';
+  // 游戏城池菜单对己方城池统一显示「前往」，包含已宣战城市的增援。
+  send.textContent=dispatch.intent==='attack'?'进攻':'前往';
   const selectFleet=()=>{
    view.fleetId=select.value;
    send.disabled=select.selectedOptions[0]?.disabled!==false;
@@ -196,30 +354,37 @@ function paintWorldCityActions(view){
   const check=smallButton('核对募兵结果');check.onclick=()=>submitWorldCityAction(view,quote,'checkRecruit');controls.append(check);
  }else if(recruit?.allowed && quote.token){
   controls.append(cityCommandButton(view,quote,'recruit','高级募兵',[
-   '消耗 '+mapNumber(recruit.cost)+' 枚'+recruit.itemId+'，为「'+name+'」增加 '+mapNumber(recruit.gain)+' 名守军。',
-   '当前角色持有 '+mapNumber(recruit.stock)+' 枚'
+   '高级募兵每次消耗'+mapNumber(recruit.cost)+'个“'+recruit.itemId+'”，为城市征召'+mapNumber(recruit.gain)+'个城防军',
+   '持有：'+mapNumber(recruit.stock)
   ]));
  }
  if(assemble?.allowed && quote.token){
-  const from=assemble.currentCityId?'原集结城为「'+assemble.currentName+'」。':'';
-  controls.append(cityCommandButton(view,quote,'assemble','设为集结城',[
-   from+'将本盟'+(assemble.role==='defence'?'防守':'进攻')+'集结目标设为「'+name+'」？',
-   '开启游戏内城战委任的舰队会跟随新目标。'
-  ]));
+  const lines=['确认向城市'+name+'集结'];
+  if(assemble.currentCityId)lines.push('当前集结城市：'+assemble.currentName);
+  controls.append(cityCommandButton(view,quote,'assemble','集结',lines));
  }
  if(cancel?.pending && quote.token){
   const check=smallButton('核对取消宣战结果');check.onclick=()=>submitWorldCityAction(view,quote,'checkCancel');controls.append(check);
  }else if(cancel?.allowed && quote.token){
   controls.append(cityCommandButton(view,quote,'cancelDeclare','取消宣战',[
-   '取消本盟对「'+name+'」的宣战？','本次将从当前角色扣除 '+mapNumber(cancel.cost)+' 钻石。'
+   '取消宣战后，将不可再向目标城派遣部队，是否确定？','当前角色消耗 '+mapNumber(cancel.cost)+' 钻石'
   ],true));
  }else if(declare?.allowed && quote.token){
-  const lines=['确认以本盟名义向「'+name+'」宣战？','当前归属 · '+worldCityOwnerName(view,declare.owner)];
+  const lines=['确认向城市'+name+'宣战','当前归属 · '+worldCityOwnerName(view,declare.owner)];
   if(Number.isSafeInteger(declare.count)&&Number.isSafeInteger(declare.limit))lines.push('本盟已宣战 '+declare.count+' / '+declare.limit+' 城');
   controls.append(cityCommandButton(view,quote,'declare','宣战',lines,true));
  }
- if(controls.childElementCount)root.append(controls);
- else if(!view.message){status.textContent='暂无可用操作';root.append(status);}
+ if(controls.childElementCount){
+  root.append(controls);
+  const dialog=$('world-map-detail');
+  if(controls.querySelector('select') && !dialog.matches(':modal')){
+   // 舰队全部变忙时保留本次选队行的宽度，归队后可以原位恢复。
+   const style=getComputedStyle(dialog);
+   const padding=parseFloat(style.paddingLeft)+parseFloat(style.paddingRight);
+   const border=parseFloat(style.borderLeftWidth)+parseFloat(style.borderRightWidth);
+   dialog.style.setProperty('--city-min-width',Math.ceil(controls.getBoundingClientRect().width+padding+border)+'px');
+  }
+ }
 }
 async function loadWorldCityActions(view){
  if(!worldCityIsCurrent(view)||view.loading)return;
@@ -262,12 +427,22 @@ async function submitWorldCityAction(view,quote,action,buildingId){
 }
 async function showWorldMapTarget(point,refresh=false,source='click'){
  if(!refresh&&Date.now()-worldMapDraggedAt<180)return;
- if(!refresh && source!=='hover'){clearCityHover();worldCityPinned=!!point.cityInfo;}
  setConsoleValue('worldMap', 'worldMapSelected', point.key);if(!refresh)drawWorldMap();
- const panel=clear($('world-map-target-facts'));
+ const panel=$('world-map-target-facts'),dialog=$('world-map-detail');
+ const scrollTop=refresh?dialog.scrollTop:0;
+ clear(panel);
+ const isFleet=point.layer==='fleets'||point.layer==='traffic';
+ if(point.cityInfo)paintWorldCityFacts(panel,point);
+ else if(isFleet){
+  if(point.cluster)panel.append(worldFleetCards(point.cluster));
+  else panel.append(worldFleetCard(point,false));
+ }
  $('world-map-target-name').textContent=point.name;
- $('world-map-city-actions').hidden=!point.cityInfo;
+ const actions=$('world-map-city-actions');
+ if(point.cityInfo && dialog.dataset.city!==point.key)clear(actions);
+ actions.hidden=!point.cityInfo;
  presentWorldMapDetail(point,refresh?'refresh':source);
+ dialog.scrollTop=scrollTop;
  if(!point.cityInfo){worldCityAction?.readController?.abort();worldCityAction=null;}
  if(point.cityInfo){
   if(!worldCityAction||!worldCityIsCurrent(worldCityAction)){
@@ -281,9 +456,7 @@ async function showWorldMapTarget(point,refresh=false,source='click'){
   }
   return;
  }
- if(point.cluster?.length>1){const actions=el('div','bar');for(const fleet of point.cluster)actions.append(smallButton(fleet.name));[...actions.children].forEach((b,i)=>b.onclick=()=>showWorldMapTarget(point.cluster[i]));panel.append(actions);}
- if(point.fleetInfo){const f=point.fleetInfo;mapFacts(panel,[['状态',f.state],['耐久',mapNumber(f.durability)+'/'+mapNumber(f.maxDura)],['任务',f.task]]);if(f.journey)panel.append(journeyNode(f.journey));return;}
- if(point.layer==='traffic'){panel.append(journeyNode(point.motion),el('p','dim',point.motion?'箭头位置按行军时间推算。':'时间未同步，仅显示已知起点。'));return;}
+ if(isFleet)return;
  panel.append(el('p','',point.detail));
  if(['treasure','radar','pirates'].includes(point.layer)){const link=el('a','','查看参数与独立预览');link.href='#config-group-'+({treasure:'treasure',radar:'radar',pirates:'pirate-hunt'})[point.layer];panel.append(link);}
  const detail=el('div','dim','正在核对目标条件…');panel.append(detail);const owner=current;
@@ -323,15 +496,18 @@ function drawWorldMap(){
  }
  const all=[],fleets=new Map();
  for(const p of data.points){if(!worldLayers.has(p.layer)&&!(p.layer==='cities'&&worldLayers.has('cityWar')&&(p.declared||p.fighting||p.assemble)))continue;if(p.layer==='fleets'&&!p.motion){const group=fleets.get(p.grid)??[];group.push(p);fleets.set(p.grid,group);}else all.push(p);}
- for(const cluster of fleets.values())all.push(cluster.length===1?cluster[0]:{...cluster[0],name:cluster.length+'支舰队（同位置）',cluster});
+ for(const cluster of fleets.values()){
+  const anchor=cluster.find(fleet=>fleet.key===worldMapSelected)??cluster[0];
+  all.push(cluster.length===1?anchor:{...anchor,name:cluster.length+'支舰队（同位置）',cluster});
+ }
  // 城池在到达箭头之上，避免箭头终点遮住城池点击。
  all.sort((a,b)=>Number(a.layer==='cities')-Number(b.layer==='cities'));
  worldMapDrawnPoints=all;
  const named=[];
  for(const point of all){
   const layer=point.layer,{x,y}=mapMotionPosition(point,mapServerNow()),selected=point.key===worldMapSelected,r=(layer==='cities'?(point.capital||point.cityType===5?7:4):layer==='fleets'?7:layer==='fields'?2.7:layer==='treasure'?({1:7,2:10,3:14})[point.size]||7:5)*unit;
-  const group=mapNode('g',{role:'button',tabindex:0,'data-world-target':point.key,'aria-label':worldLayerNames[layer]+'：'+point.name+(point.cityInfo?'，打开操作':'，查看详情')});
-  if(point.cityInfo){group.dataset.worldCity='';group.setAttribute('aria-haspopup','dialog');group.setAttribute('aria-controls','world-map-detail');}
+  const group=mapNode('g',{role:'button',tabindex:0,'data-world-target':point.key,'aria-label':worldLayerNames[layer]+'：'+point.name+'，查看详情'});
+  if(hasAnchoredMapDetail(point)){group.setAttribute('aria-haspopup','dialog');group.setAttribute('aria-controls','world-map-detail');}
   const title=mapNode('title');
   if(!point.cityInfo){title.textContent=point.name+' · '+(point.motion?mapJourney(point.motion):point.detail);group.append(title);}
   let shape,fill=point.routeColor||worldLayerColors[layer];
@@ -369,18 +545,23 @@ function drawWorldMap(){
   const background=mapNode('rect',{x:box.x,y:box.y,width:w,height:h,rx:2*unit,fill:'#f4fafc','fill-opacity':.9});labels.append(background);const label=mapNode('text',{x:box.x+3*unit,y:box.y+11.5*unit,'font-size':11*unit,'font-weight':p.capital||p.layer==='fleets'?600:400});label.textContent=text;labels.append(label);movingByKey.get(p.key)?.labels.push(background,label);
   if(queue){const counts=mapNode('text',{x:box.x+3*unit,y:box.y+24*unit,'font-size':10*unit,fill:'#9b4138'});counts.textContent=queue;labels.append(counts);}
  }
- placeWorldCityPopup();
+ placeWorldMapPopup();
 }
 async function refreshWorldMap(){
  if(!current||snapshot.paused||disconnected.has(current)||worldMapLoading)return;const account=current,serial=++worldMapSerial;setConsoleValue('worldMap', 'worldMapLoading', true);worldMapLastAttempt=Date.now();$('world-map-refresh').disabled=true;$('world-map-time').textContent='正在同步…';
  try{
-  const data=await call('/api/world/overview');if(current!==account||serial!==worldMapSerial)return;
+  worldMapOverviewRead=call('/api/world/overview');
+  const data=await worldMapOverviewRead;if(current!==account||serial!==worldMapSerial)return;
   const fresh=worldMapOwner!==account||worldMapData?.scenario!==data.scenario;setConsoleValue('worldMap', 'worldMapOwner', account);setConsoleValue('worldMap', 'worldMapData', data);setConsoleValue('worldMap', 'worldMapReceivedAt', Date.now());worldMapJourneyNodes=[];
   if(fresh){closeWorldMapDetail();setConsoleValue('worldMap', 'worldMapView', {x:data.width/2,y:data.height/2,zoom:1});setMapZoomInput(1);}
   $('world-map-time').textContent='更新 '+new Date(data.checkedAt*1000).toLocaleTimeString('zh-CN');
   paintWorldFuel(data);
   const number=value=>Number.isSafeInteger(value)?String(value):'未同步';
-  clear($('world-map-fleets')).append(table(['舰队','耐久','状态','征程'],data.fleets.map(f=>{const name=f.name.replace('远征舰队 ','舰队').replace(' 队',''),button=el('button','inline-link',name);button.type='button';button.setAttribute('aria-label','定位'+name);button.onclick=()=>locateOwnFleet(f);return[button,number(f.durability)+'/'+number(f.maxDura),f.state,journeyNode(f.journey)];})));
+  clear($('world-map-fleets')).append(table(['舰队','耐久','状态','征程','操作'],data.fleets.map(fleet=>{
+   const name=fleet.name.replace('远征舰队 ','舰队').replace(' 队',''),button=el('button','inline-link',name);
+   button.type='button';button.dataset.locateFleet='fleet-'+fleet.id;button.setAttribute('aria-label','定位'+name);button.onclick=()=>locateOwnFleet(fleet);
+   return [button,number(fleet.durability)+'/'+number(fleet.maxDura),fleet.state,journeyNode(fleet.journey),worldFleetSpeedButton(account,fleet)];
+  })));
   const wars=clear($('world-map-wars'));wars.append(el('strong','','城战'));
   if(data.cityWars?.length)wars.append(table(['城市 / 状态','宣战','进攻队列','防守队列','交战 / 行军'],data.cityWars.map(w=>[w.name+' · '+w.status,w.declared.map(d=>d.attack+' → '+d.defence).join('；')||'未同步',number(w.attack)+' + 优先'+number(w.priorityAttack),number(w.defence)+' + 优先'+number(w.priorityDefence),number(w.battles)+' 点 / '+number(w.inbound)+' 队'])));
   else wars.append(el('p','dim',data.layers.cityWar==='未同步'?'宣战状态未同步':'当前没有已同步的宣战或交战城市'));
@@ -398,9 +579,13 @@ async function refreshWorldMap(){
   }
   const legend=clear($('world-map-legend'));for(const owner of [{name:'未占领',color:'#c4d7df'},...((data.regions??[]).some(r=>r.owner===null)?[{name:'归属未同步',color:'#e1e7e8'}]:[]),...(data.owners??[])]){const item=el('span'),color=el('i','map-swatch');color.style.background=owner.color;if(owner.defaultName)item.title='当前按游戏主城默认名显示';item.append(color,el('span','',owner.name));legend.append(item);}
   paintMapStateLegend();$('world-map-notes').textContent=data.notes.join(' ');drawWorldMap();
-  if(worldMapSelected && $('world-map-detail').open){const selected=worldMapDrawnPoints.find(p=>p.key===worldMapSelected)||data.points.find(p=>p.key===worldMapSelected);if(selected)void showWorldMapTarget(selected,true);else closeWorldMapDetail();}
+  if(worldMapSelected && mapDetailDialog.open){
+   const marker=!mapDetailDialog.hasAttribute('data-located-fleet') && worldMapDrawnPoints.find(point=>point.key===worldMapSelected);
+   const selected=marker || data.points.find(point=>point.key===worldMapSelected);
+   if(selected)void showWorldMapTarget(selected,true);else closeWorldMapDetail();
+  }
  }catch(error){if(current===account&&serial===worldMapSerial)$('world-map-time').textContent='未同步：'+error.message;}
- finally{if(serial===worldMapSerial){setConsoleValue('worldMap', 'worldMapLoading', false);worldMapLastAttempt=Date.now();$('world-map-refresh').disabled=false;}}
+ finally{if(serial===worldMapSerial){worldMapOverviewRead=null;setConsoleValue('worldMap', 'worldMapLoading', false);worldMapLastAttempt=Date.now();$('world-map-refresh').disabled=false;}}
 }
 function maybeRefreshWorldMap(){
  if(!worldMapAutoRefresh||document.hidden||$('tab-overview').classList.contains('hidden'))return;
@@ -412,6 +597,7 @@ function updateWorldMapMotion(){
  if(!worldMapData||document.hidden||$('tab-overview').classList.contains('hidden'))return;
  if(!worldMapDrag&&!mapStale())for(const record of worldMapMovingNodes){
   const p=mapMotionPosition(record.point,mapServerNow()),transform='translate('+(p.x-record.x)+' '+(p.y-record.y)+')';record.node.setAttribute('transform',transform);for(const label of record.labels)label.setAttribute('transform',transform);record.title.textContent=record.point.name+' · '+mapJourney(record.point.motion);
+  if(record.point.key===mapDetailDialog.dataset.anchorKey)placeWorldMapPopup();
  }
  worldMapJourneyNodes=worldMapJourneyNodes.filter(r=>r.node.isConnected);for(const r of worldMapJourneyNodes){const text=mapJourney(r.journey);if(r.node.textContent!==text)r.node.textContent=text;}
 }
@@ -428,34 +614,27 @@ mapDetailDialog.onclick=event=>{
  if(event.clientX<r.left || event.clientX>r.right || event.clientY<r.top || event.clientY>r.bottom)
   closeWorldMapDetail({restoreFocus:true,redraw:true});
 };
-mapDetailDialog.onpointerenter=clearCityHover;
-mapDetailDialog.onpointerleave=leaveWorldCity;
-function pinWorldCity(){if(mapDetailDialog.dataset.city){clearCityHover();worldCityPinned=true;}}
-mapDetailDialog.addEventListener('pointerdown',pinWorldCity);
-mapDetailDialog.addEventListener('focusin',pinWorldCity);
 document.addEventListener('pointerdown',event=>{
- if(!mapDetailDialog.dataset.city || mapDetailDialog.matches(':modal') || $('modal').open ||
+ if(!mapDetailDialog.dataset.anchorKey || mapDetailDialog.matches(':modal') || $('modal').open ||
   mapDetailDialog.contains(event.target) || event.target.closest?.('[data-world-target]'))return;
  closeWorldMapDetail({redraw:true});
 });
 document.addEventListener('keydown',event=>{
- if(event.key==='Escape' && mapDetailDialog.dataset.city && !mapDetailDialog.matches(':modal') && !$('modal').open){
-  event.preventDefault();closeWorldMapDetail({restoreFocus:worldCityPinned,redraw:true});
+ if(event.key==='Escape' && mapDetailDialog.dataset.anchorKey && !mapDetailDialog.matches(':modal') && !$('modal').open){
+  event.preventDefault();closeWorldMapDetail({restoreFocus:true,redraw:true});
  }
 });
-cityModalScreen.addEventListener('change',()=>{if(mapDetailDialog.dataset.city)closeWorldMapDetail({redraw:true});});
-window.addEventListener('scroll',placeWorldCityPopup,{passive:true,capture:true});
-new ResizeObserver(placeWorldCityPopup).observe(mapDetailDialog);
-$('world-map').addEventListener('pointermove',hoverWorldCity);
-$('world-map').addEventListener('pointerleave',leaveWorldCity);
+mapModalScreen.addEventListener('change',()=>{if(mapDetailDialog.dataset.anchorKey)closeWorldMapDetail({redraw:true});});
+window.addEventListener('scroll',placeWorldMapPopup,{passive:true,capture:true});
+window.addEventListener('resize',placeWorldMapPopup);
 $('world-map-zoom').oninput=()=>mapZoom(Number($('world-map-zoom').value));
 setMapZoomInput(1);
 $('world-map-home').onclick=()=>{const p=worldMapData?.points.find(p=>p.layer==='fleets')||worldMapData?.home;if(!p)return;closeWorldMapDetail();const position=mapMotionPosition(p,mapServerNow());setConsoleValue('worldMap', 'worldMapSelected', p.key);setConsoleValue('worldMap', 'worldMapView', {x:position.x,y:position.y,zoom:4});setMapZoomInput(4);drawWorldMap();};
 let worldMapTouchPan=false;
 bindConsoleSlice('worldMapTouch', { worldMapTouchPan }, state => { worldMapTouchPan=state.worldMapTouchPan; });
 $('world-map-pan').onclick=()=>{setConsoleValue('worldMapTouch', 'worldMapTouchPan', !worldMapTouchPan);const button=$('world-map-pan');button.setAttribute('aria-pressed',String(worldMapTouchPan));button.textContent=worldMapTouchPan?'完成移动':'移动地图';$('world-map').classList.toggle('touch-pan',worldMapTouchPan);};
-$('world-map').addEventListener('pointerdown',e=>{if(e.button!==0||!worldMapData)return;clearCityHover();if(e.pointerType==='touch'&&!worldMapTouchPan)return;worldMapDrag={id:e.pointerId,x:e.clientX,y:e.clientY,cx:worldMapView.x,cy:worldMapView.y,view:mapViewBox(),moved:false};});
-$('world-map').addEventListener('pointermove',e=>{const d=worldMapDrag;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(!d.moved&&Math.hypot(dx,dy)<4)return;if(!d.moved&&mapDetailDialog.dataset.city)closeWorldMapDetail();d.moved=true;$('world-map').setPointerCapture(e.pointerId);$('world-map').classList.add('is-dragging');mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.x=d.cx-dx*d.view.width/$('world-map-scroll').clientWidth));mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.y=d.cy-dy*d.view.height/$('world-map-scroll').clientHeight));applyMapView();});
+$('world-map').addEventListener('pointerdown',e=>{if(e.button!==0||!worldMapData)return;if(e.pointerType==='touch'&&!worldMapTouchPan)return;worldMapDrag={id:e.pointerId,x:e.clientX,y:e.clientY,cx:worldMapView.x,cy:worldMapView.y,view:mapViewBox(),moved:false};});
+$('world-map').addEventListener('pointermove',e=>{const d=worldMapDrag;if(!d||d.id!==e.pointerId)return;const dx=e.clientX-d.x,dy=e.clientY-d.y;if(!d.moved&&Math.hypot(dx,dy)<4)return;if(!d.moved&&mapDetailDialog.dataset.anchorKey)closeWorldMapDetail();d.moved=true;$('world-map').setPointerCapture(e.pointerId);$('world-map').classList.add('is-dragging');mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.x=d.cx-dx*d.view.width/$('world-map-scroll').clientWidth));mutateConsoleValue('worldMap', 'worldMapView', nextStateValue => (nextStateValue.y=d.cy-dy*d.view.height/$('world-map-scroll').clientHeight));applyMapView();});
 const endMapDrag=e=>{if(!worldMapDrag||worldMapDrag.id!==e.pointerId)return;const moved=worldMapDrag.moved;if(moved)worldMapDraggedAt=Date.now();worldMapDrag=null;$('world-map').classList.remove('is-dragging');if($('world-map').hasPointerCapture(e.pointerId))$('world-map').releasePointerCapture(e.pointerId);if(moved)drawWorldMap();};
 window.addEventListener('pointerup',endMapDrag,true);window.addEventListener('pointercancel',endMapDrag,true);
 $('world-map').addEventListener('wheel',e=>{if(!e.ctrlKey||!worldMapData)return;e.preventDefault();const rect=$('world-map').getBoundingClientRect();mapZoom(worldMapView.zoom*(e.deltaY<0?1.15:1/1.15),{x:(e.clientX-rect.left)/rect.width,y:(e.clientY-rect.top)/rect.height});},{passive:false});

@@ -113,6 +113,30 @@ await test('投喂回包丢失后由新连接核对进度，补产不阻塞且�
   assert.equal(f.state.writes.length, 1);
 });
 
+await test('多属性海兽按真实协议确认投喂，丢回包后按总进度核销', async () => {
+  const f = fixture();
+  Object.assign(f.state.pets[0], { level: 5, star: 1 });
+  f.state.pets[0].profFeed = [{ heroProf: '法师', attrFeed: [{ attr: 1, times: 0, value: 0 }, { attr: 2, times: 1, value: 3 }] }];
+  const runFeed = () => {
+    const step = f.feed();
+    step.verify.fed = f.state.pets[0].profFeed[0].attrFeed.reduce((sum, attr) => sum + attr.times, 0);
+    return runBaseAutomation(f.client, protocol, { tables: {} }, { actions: [step] }, { player: f.player, getSettings: () => f.settings });
+  };
+  const original = f.client.request.bind(f.client);
+  f.client.request = async (name, ...args) => {
+    const reply = await original(name, ...args);
+    if (name !== 'AllPetRequest') return reply;
+    return protocol.AllPetResponse.decode(protocol.AllPetResponse.encode(reply).finish());
+  };
+  assert.equal((await runFeed())[0].ok, true);
+  f.state.mode = 'lost';
+  assert.equal((await runFeed())[0].ok, false);
+  assert.equal(pendingOrderMaterialSpends(f.player).length, 1);
+  await refreshOrderMaterialSpends({ ...f.client }, f.player);
+  assert.equal(pendingOrderMaterialSpends(f.player).length, 0);
+  assert.equal(f.state.writes.length, 2);
+});
+
 await test('超出安全整数范围的海兽UID可在丢回包后准确恢复', async () => {
   const f = fixture(); f.state.pets[0].uid = { low: 1, high: 2097152 }; f.state.mode = 'lost';
   await f.runFeed();

@@ -4,6 +4,13 @@ export const fleetSpeedDefaults = id => ({ id, repair: false, march: false,
   repairSmartWaitSeconds: 5, marchSmartWaitSeconds: 5,
   repairSkipSeconds: 60, marchSkipSeconds: 60, marchMinSavedSeconds: 30,
   repairDailyDiamonds: 0, marchDailyDiamonds: 0 });
+
+export function fleetSpeedEnabled(settings) {
+  const cityWar = settings?.cityWar;
+  return !!(cityWar?.enabled && settings.fleetSpeed?.fleets?.some(fleet =>
+    (fleet.repair || fleet.march) && cityWar.fleetIds?.includes(fleet.id)));
+}
+
 export const FLEET_SPEED_NUMBERS = {
   repairSmartWaitSeconds: { kind: 'number', min: 1, max: 60 },
   marchSmartWaitSeconds: { kind: 'number', min: 1, max: 60 },

@@ -36,8 +36,9 @@ export async function runAllianceRadar(client,config,player,{getSettings,ledger,
   if(radarRepairPending(client)){note('舰队维修支出待确认，暂不派遣情报');return;}
   if(!ledger)throw Error('情报额度记录不可用');
   const baseline=ledger.keyRecords();
+  const readStartedAt=Date.now();
   let s=await readAllianceRadar(client,config,player);
-  const changes=settleFleetSnapshot(ledger,{worldId:s.world,fleets:s.fleets,events:s.events,baseline,kinds:['radarSend']});
+  const changes=settleFleetSnapshot(ledger,{worldId:s.world,fleets:s.fleets,events:s.events,readStartedAt,baseline,kinds:['radarSend']});
   for(const change of changes)report({label:change.reason==='确认情报派遣'?'已确认前次联盟情报派遣':'已释放返航舰队的情报占用',ok:true,reason:change.reason});
   for(const e of s.events.filter(e=>e.state===4)){
    if(!enabled()||!getSettings().radar.enabled)return;
@@ -52,7 +53,13 @@ export async function runAllianceRadar(client,config,player,{getSettings,ledger,
   const events=s.events.filter(e=>e.state===1&&p.types.includes(e.fixed?'fixed':e.pirate?'pirate':e.refugee?'refugee':e.collectRes?'collect':'spy'));
   if(!events.length){note('没有允许处理的待办情报');return;}
   const usedFleets=new Set(),attempted=new Set(),sentCosts=new Map(),stockCeiling=new Map(s.stock);
-  for(const r of Object.values(recordsInWorld(ledger.keyRecords(),s.world)))if(r.details?.kind==='radarSend'&&r.details.active!==false)for(const [id,cap]of Object.entries(r.details.materialCeilings??{}))if(valid(cap))stockCeiling.set(id,Math.min(stockCeiling.get(id)??0,cap));
+  for(const {confirmed,details} of Object.values(recordsInWorld(ledger.keyRecords(),s.world))){
+   if(details?.kind!=='radarSend'||(confirmed&&details.active===false))continue;
+   // 解锁舰队后，未确认交付的材料仍按原库存上限预留。
+   for(const [id,cap] of Object.entries(details.materialCeilings??{})){
+    if(valid(cap))stockCeiling.set(id,Math.min(stockCeiling.get(id)??0,cap));
+   }
+  }
   let fuelCeiling=s.fuel;
   // 请求逐个复核并提交，舰队在游戏内并行行动，不等待前一队完成。
   for(let slot=0;slot<p.fleetIds.length;slot++){

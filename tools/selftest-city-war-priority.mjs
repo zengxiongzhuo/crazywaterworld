@@ -6,7 +6,9 @@ import path from 'node:path';
 
 const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cw-city-priority-'));
 const previousDataDir = process.env.CW_DATA_DIR;
+const previousResourceDir = process.env.CW_RESOURCE_DIR;
 process.env.CW_DATA_DIR = path.join(directory, 'data');
+process.env.CW_RESOURCE_DIR = path.join(directory, 'resources');
 fs.mkdirSync(process.env.CW_DATA_DIR);
 const { warForgeFixture, warForgeSettings } = await import('./fixtures/war-forge.mjs');
 const { createUsageLedger } = await import('../src/automation-settings.mjs');
@@ -25,7 +27,10 @@ const check = async (name, action) => {
 const ledger = () => createUsageLedger('模拟城战优先级账号', { file: path.join(directory, 'usage-' + (++sequence) + '.json') });
 const read = (f, settings) => readCityWar(f.client, f.protocol, f.config, f.player, settings.cityWar, { mapLoader: f.mapLoader });
 const preview = async (f, settings) => planCityWar(await read(f, settings), settings);
-const multilateral = f => f.state.war.declarations.push({ attackGuildIdx: 9, defenceGuildIdx: 8, cityId: 2 });
+const multilateral = f => {
+  f.state.war.declarations.push({ attackGuildIdx: 9, defenceGuildIdx: 8, cityId: 2 });
+  f.state.cities.find(city => city.id === 2).attackFleetNum = 1;
+};
 const mapFile = path.join(directory, 'map.json');
 fs.writeFileSync(mapFile, JSON.stringify([null, null, null, null, null, [[null, null, {
   mapInfo: { width: 10, height: 10, tileWidth: 100, tileHeight: 75 },
@@ -94,7 +99,7 @@ try {
     try{
       const f=warForgeFixture(),settings=warForgeSettings(),usage=ledger();f.client.setMaxListeners(32);
       settings.forge.enabled=false;Object.assign(settings.cityWar,{fleetIds:['1远征船'],nativeCommissionLimit:0,checkEverySeconds:15});
-      Object.assign(settings.fleetSpeed,{enabled:true,dailyDiamondLimit:100});settings.resources.allowDiamonds=true;
+      settings.resources.allowDiamonds=true;
       Object.assign(settings.fleetSpeed.fleets[0],{repair:true,repairDailyDiamonds:100});
       f.config.resources={mapFiles:{1:mapFile}};f.config.tables.SpeedUpRubyCfg={data:[{minute:0,fleet:10},{minute:60,fleet:20}]};
       Object.assign(f.state.fleets[0],{state:4,durability:1900,repairing:{startTs:clock/1000-100,endTs:clock/1000+121,endDura:2000}});
@@ -305,6 +310,8 @@ try {
   Date.now = realNow;
   if (previousDataDir === undefined) delete process.env.CW_DATA_DIR;
   else process.env.CW_DATA_DIR = previousDataDir;
+  if (previousResourceDir === undefined) delete process.env.CW_RESOURCE_DIR;
+  else process.env.CW_RESOURCE_DIR = previousResourceDir;
   const resolved = path.resolve(directory), tempRoot = path.resolve(os.tmpdir());
   if (path.dirname(resolved) !== tempRoot || !path.basename(resolved).startsWith('cw-city-priority-')) throw new Error('拒绝清理意外测试目录');
   fs.rmSync(resolved, { recursive: true, force: true });

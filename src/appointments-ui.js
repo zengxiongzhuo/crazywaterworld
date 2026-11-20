@@ -213,12 +213,6 @@ $('appointments-reload').onclick = () => {
   editor.draft = editor.data ? structuredClone(editor.data.settings) : null;
   void appointmentsLoad(true);
 };
-window.addEventListener('beforeunload', event => {
-  if ([...appointmentsEditors.values()].some(editor => editor.saving || appointmentsDirty(editor))) {
-    event.preventDefault();
-    event.returnValue = '';
-  }
-});
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && appointmentsDrag) appointmentsCancelDrag();
 });
